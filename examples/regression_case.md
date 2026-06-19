@@ -28,8 +28,8 @@ We evaluated the model's response under two configurations.
 
 1. **Technical State is Disk-Backed**
    - *Examples*: Command outputs, code files, test suites, directory listings.
-   - *Safe to Drop*: Yes. Once code is written or a command is run, the workspace reflects the final state. An agent can always query the disk to reconstruct technical details. Technical history is often recoverable from the workspace and therefore a candidate for compaction (representing over 80% of the session token footprint in this session).
+   - *Verdict*: **Candidate for compaction** (often recoverable from the workspace). Once code is written or a command is run, the workspace reflects the final state. An agent can always query the disk to reconstruct technical details. Technical history is often recoverable from the workspace and therefore a candidate for compaction (representing over 80% of the session token footprint in this session).
 
 2. **Social State is Not Disk-Backed**
    - *Examples*: User preferences, constraints, style guides, rejected choices, design philosophies.
-   - *Safe to Drop*: No. These preferences reside *only* in the conversational thread. If you strip them, the agent has no way to retrieve them from the environment, leading to alignment regressions.
+   - *Verdict*: **Must persist**. These preferences reside *only* in the conversational thread. If you strip them, the agent has no way to retrieve them from the environment, leading to alignment regressions.

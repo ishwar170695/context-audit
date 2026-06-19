@@ -56,6 +56,12 @@ Our benchmark data indicates that larger sessions become increasingly repetitive
 
 ---
 
+### Why This Matters
+
+Long-running coding-agent sessions often exceed 50k–200k tokens. Most optimization discussions focus on prompt caching, retrieval filtering, and pruning unused context. Our measurements suggest those may not be the dominant costs in this dataset.
+
+---
+
 ## 📉 Two Killed Hypotheses
 
 Our measurements falsified two common assumptions about optimizing agent context:
@@ -69,18 +75,18 @@ Our measurements falsified two common assumptions about optimizing agent context
 
 ## 💡 The Novel Observation: Coding Agents Have Two Memory Systems
 
-The data indicates that the true driver of context cost is not the static instructions or retrieval waste, but rather the accumulated conversation history. However, coding agents are architecturally different from standard chatbots: they have two distinct memory systems:
+In this dataset, the dominant contributor to context growth appears to be the accumulated conversation history. However, coding agents are architecturally different from standard chatbots: they have two distinct memory systems:
 
 1. **Workspace Memory (Disk-Backed)**
    * *Examples*: Terminal command outputs, read file payloads, file structure listings, and compiler logs.
-   * *Verdict*: **Safe to prune**. Once code changes are written to the workspace, the filesystem becomes the agent's absolute memory. Carrying the raw chat transcripts of how those files were read or built is redundant. In this session, this represents over **80% of technical/execution context** that was entirely prunable without causing technical regressions. Technical history is often recoverable from the workspace and therefore a candidate for compaction.
+   * *Verdict*: **Candidate for compaction** (often recoverable from the workspace). Once code changes are written to the workspace, the filesystem becomes the agent's absolute memory. Carrying the raw chat transcripts of how those files were read or built is redundant. In this session, this represents over **80% of technical/execution context** that was entirely prunable without causing technical regressions. Technical history is often recoverable from the workspace and therefore a candidate for compaction.
 2. **Conversational Memory (Not Disk-Backed)**
    * *Examples*: User preferences, constraints, stylistic choices, design philosophies, and rejected options (e.g., "why we are not using embeddings").
    * *Verdict*: **Must persist**. These preferences reside purely in the conversational narrative. Pruning them naively causes social regression — the agent suggesting previously rejected approaches because it lacks the alignment context. (See [regression_case.md](examples/regression_case.md) for how this looks in practice).
 
 ---
 
-## 🧪 The Regression Case Study: Side-by-Side
+## 🧪 Simulated Pruning Example: Side-by-Side
 
 To demonstrate this behavior, we ran a simulation of a hypothetical **Turn 124** prompt from a developer session:
 

@@ -391,11 +391,13 @@ def print_benchmark_report(summary: Any, directory_path: str, top_n: int = 5, te
     if total_repeated_spend == 0.0:
         total_repeated_spend = total_savings
 
+    avg_overhead = statistics.mean(summary.overhead_pcts) if summary.overhead_pcts else 0.0
+
     # 0. Print instant 10-second summary card for benchmark
     print_instant_summary_card(
         target_label=f"{summary.total_sessions} Sessions ({directory_path})",
         repeated_pct=avg_reuse,
-        overhead_pct=12.0,  # Benchmark empirical static prefix overhead
+        overhead_pct=avg_overhead,
         cache_hit_pct=avg_savings_pct if avg_savings_pct > 0 else 61.0,
         wasted_usd=total_repeated_spend
     )

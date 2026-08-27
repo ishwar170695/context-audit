@@ -561,6 +561,7 @@ class BenchmarkSummary:
         self.standard_costs = []
         self.cached_costs = []
         self.savings_list = []
+        self.overhead_pcts = []
         
         self.repeated_blocks = []
         
@@ -611,6 +612,10 @@ def run_benchmark(
             summary.cached_costs.append(result.cached_input_cost)
             summary.savings_list.append(result.potential_cache_savings)
             
+            overhead_tok = result.category_breakdown.get("System Prompt", 0) + result.category_breakdown.get("Tool Schemas", 0)
+            overhead_pct = (overhead_tok / result.final_context_size * 100) if result.final_context_size > 0 else 0.0
+            summary.overhead_pcts.append(overhead_pct)
+            
             final_size = result.final_context_size
             if final_size < 5000:
                 b_name = "< 5k tokens"
@@ -639,7 +644,7 @@ def run_benchmark(
                 global_blocks[h]["occurrences_per_file"][f_path] = block["occurrences"]
             
             parsed_count += 1
-        except Exception:
+        except Exception as e:
             continue
             
     summary.total_sessions = parsed_count

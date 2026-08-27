@@ -1,3 +1,6 @@
+# Cross-Session Benchmark Summary (27 Sessions)
+
+```text
 +-------------------------- context-audit benchmark --------------------------+
 |   CROSS-SESSION BENCHMARK SUMMARY                                           |
 |   Directory: 27 Discovered Sessions                                         |
@@ -62,3 +65,4 @@ Does reuse scale linearly, or do larger sessions become exponentially more repet
 | > 50k      |          6 |      99.0% |     $37.59 |      97.3k |      14.0M |
 | tokens     |            |            |            |            |            |
 +-----------------------------------------------------------------------------+
+```

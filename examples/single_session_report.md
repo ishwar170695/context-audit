@@ -1,3 +1,6 @@
+# Single Session Audit Report (123 Turns)
+
+```text
 +---------------------------- context-audit v0.1 -----------------------------+
 | CONTEXT AUDIT REPORT                                                        |
 | Target: transcript.jsonl                                                    |
@@ -12,13 +15,11 @@
 |                                                                             |
 | Financial Cost Estimates:                                                   |
 |   Est. Input Cost (No Caching): $8.40                                       |
-|   Est. Cost (With Prompt Caching): $8.24                                    |
-|   Potential Cache Savings (this session): $0.16 (1.9%)                      |
+|   Est. Cost (With Prompt Caching): $1.12                                    |
+|   Potential Cache Savings (this session): $7.28 (86.7%)                     |
 |                                                                             |
 | [Note: Context Reuse represents cumulative tokens consisting of previously  |
-| seen blocks.                                                                |
-| Prompt Caching assumes system prompt + tool schemas are cached after the    |
-| first turn.]                                                                |
+| seen blocks. Prompt Caching simulates dynamic prefix caching.]              |
 +-----------------------------------------------------------------------------+
 
 Context Timeline (Turn-by-Turn Growth)
@@ -213,3 +214,4 @@ Repeated Blocks Analysis
 | This is now in    |         |       |                  |                    |
 | the range ..."    |         |       |                  |                    |
 +-----------------------------------------------------------------------------+
+```

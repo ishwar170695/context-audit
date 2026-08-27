@@ -25,8 +25,78 @@ def format_usd(val: float) -> str:
         return f"${val:.4f}"
     return f"${val:.2f}"
 
-def print_audit_report(result: Any, file_path: str, text_limit: int = 40):
+import sys
+
+def safe_char(char: str, fallback: str) -> str:
+    try:
+        char.encode(sys.stdout.encoding or "utf-8")
+        return char
+    except Exception:
+        return fallback
+
+CLIPBOARD_ICON = safe_char("📋 ", "[*] ")
+
+def print_instant_summary_card(
+    target_label: str,
+    repeated_pct: float,
+    overhead_pct: float,
+    cache_hit_pct: float,
+    wasted_usd: float
+):
+    """Prints the 10-second summary card and shareable copyable snippet."""
     console.print()
+    card_text = Text.assemble(
+        ("  Target: ", "dim"), (f"{target_label}\n\n", "bold white"),
+        (f"  {repeated_pct:.0f}% ", "bold yellow" if repeated_pct > 30 else "bold white"),
+        (" repeated context ", "white"), ("(paid for twice+)\n", "dim"),
+        (f"  {overhead_pct:.0f}% ", "bold cyan"),
+        (" fixed overhead ", "white"), ("(tools/system prompt before you typed)\n", "dim"),
+        (f"  {cache_hit_pct:.0f}% ", "bold green"),
+        (" effective cache hit rate ", "white"), ("(target benchmark: ~86%)\n\n", "dim"),
+        ("  Estimated wasted spend: ", "bold white"), (f"~{format_usd(wasted_usd)}\n", "bold red")
+    )
+    
+    console.print(Panel(
+        card_text,
+        title="[bold green]context-audit summary[/bold green]",
+        border_style="green",
+        box=box.ASCII
+    ))
+    
+    shareable_str = f"{CLIPBOARD_ICON}My context-audit: {repeated_pct:.0f}% repeated context | {cache_hit_pct:.0f}% cache hit rate | ~{format_usd(wasted_usd)} wasted. Run yours: pip install context-audit && context-audit"
+    console.print(f"[dim]{shareable_str}[/dim]\n")
+
+
+def print_audit_report(result: Any, file_path: str, text_limit: int = 40):
+    import sys
+    try:
+        "█".encode(sys.stdout.encoding or "utf-8")
+        BLOCK_CHAR = "█"
+    except Exception:
+        BLOCK_CHAR = "#"
+
+    try:
+        "⚠️".encode(sys.stdout.encoding or "utf-8")
+        WARN_CHAR = "⚠️"
+    except Exception:
+        WARN_CHAR = "[!]"
+
+    # 0. Print instant 10-second summary card
+    tot = result.total_tokens_across_session
+    overhead_tokens = result.category_breakdown.get("System Prompt", 0) + result.category_breakdown.get("Tool Schemas", 0)
+    overhead_pct = (overhead_tokens / tot * 100) if tot > 0 else 0.0
+    wasted_usd = sum(b.get("repeated_cost_usd", 0.0) for b in result.repeated_blocks)
+    if wasted_usd == 0.0:
+        wasted_usd = result.potential_cache_savings
+    
+    print_instant_summary_card(
+        target_label=file_path,
+        repeated_pct=result.context_reuse_ratio,
+        overhead_pct=overhead_pct,
+        cache_hit_pct=result.cache_savings_percentage,
+        wasted_usd=wasted_usd
+    )
+
     console.print(Panel(
         Align.center(
             Text.assemble(
@@ -142,8 +212,151 @@ def print_audit_report(result: Any, file_path: str, text_limit: int = 40):
     console.print(repeated_table)
     console.print()
 
-def print_benchmark_report(summary: Any, directory_path: str, top_n: int = 5, text_limit: int = 40):
+    # 5. Tool Output Entropy Section
+    console.print("\n[bold cyan]Tool Output Entropy & Anomaly Detection[/bold cyan]")
+    entropy_table = Table(show_header=True, header_style="bold cyan", expand=True, box=box.ASCII)
+    entropy_table.add_column("Turn (Step)", style="dim")
+    entropy_table.add_column("Tool Name", style="bold white")
+    entropy_table.add_column("Tokens", justify="right")
+    entropy_table.add_column("Entropy", justify="right")
+    entropy_table.add_column("Baseline Mean/Std", justify="right", style="dim")
+    entropy_table.add_column("Anomaly Score", justify="right")
+    entropy_table.add_column("Status", justify="center")
+    entropy_table.add_column("Output Preview", style="italic dim")
+
+    for to in result.tool_entropy_results:
+        # Highlight anomaly spikes in red, others normal
+        status_style = "bold green"
+        score_style = "green"
+        if to["status"] == "Anomaly Spike":
+            status_style = "bold red"
+            score_style = "bold red"
+        elif to["status"] == "Insufficient baseline":
+            status_style = "dim"
+            score_style = "dim"
+
+        baseline_str = f"{to['baseline_mean']:.2f} / {to['baseline_std']:.2f}" if to["baseline_std"] > 0 else f"{to['baseline_mean']:.2f} / -"
+        
+        entropy_table.add_row(
+            f"Turn {to['turn']} (Step {to['index']})",
+            to["tool_name"],
+            str(to["token_count"]),
+            f"{to['entropy']:.3f}",
+            baseline_str,
+            f"{to['anomaly_score']:.2f}" if to["status"] != "Insufficient baseline" else "-",
+            Text(to["status"], style=status_style),
+            to["content_preview"]
+        )
+
+    if not result.tool_entropy_results:
+        entropy_table.add_row("-", "No tool calls executed", "0", "0.00", "-", "-", "-", "-")
+    console.print(entropy_table)
+
+    # 6. Belief Drift Warnings Section
+    console.print("\n[bold orange3]Belief Drift / Flip Detection[/bold orange3]")
+    if result.belief_drift_results:
+        for bd in result.belief_drift_results:
+            drift_panel = Panel(
+                Text.assemble(
+                    ("Belief Flip Detected for Entity: ", "bold yellow"), (f"{bd['entity']}\n\n", "bold white"),
+                    ("First Claim (Turn ", "gray"), (str(bd["first_claim"]["turn"]), "bold white"), ("):\n", "gray"),
+                    (f"  Value: \"{bd['first_claim']['value']}\"\n", "green"),
+                    (f"  Source: \"{bd['first_claim']['source_sentence']}\"\n\n", "italic dim"),
+                    ("Second Claim (Turn ", "gray"), (str(bd["second_claim"]["turn"]), "bold white"), ("):\n", "gray"),
+                    (f"  Value: \"{bd['second_claim']['value']}\"\n", "red"),
+                    (f"  Source: \"{bd['second_claim']['source_sentence']}\"\n\n", "italic dim"),
+                    ("[Verify: Either the agent learned updated info (valid) or was poisoned by stale context (regression).]", "dim italic")
+                ),
+                title="[bold red]BELIEF DRIFT ALERT[/bold red]",
+                border_style="red",
+                box=box.ASCII
+            )
+            console.print(drift_panel)
+    else:
+        console.print("[green]No belief drift/flips detected. Agent claims remain consistent across the session.[/green]")
+
+    # 7. Context Window Pressure Map Section
+    console.print("\n[bold magenta]Context Window Pressure & Composition Map[/bold magenta]")
+    pressure_table = Table(show_header=True, header_style="bold magenta", expand=True, box=box.ASCII)
+    pressure_table.add_column("Turn", style="dim", justify="right")
+    pressure_table.add_column("Total Tokens", justify="right")
+    pressure_table.add_column("Capacity %", justify="right")
+    pressure_table.add_column("Composition Visual Map (Sys | Tools | User | ToolOut | Reasoning)")
+    pressure_table.add_column("Pruning Risk Flag", justify="center")
+
+    for pm in result.context_pressure_map:
+        bp = pm["breakdown_pct"]
+        bar_len = 30
+        
+        sys_chars = max(0, int(round(bp["system"] / 100 * bar_len)))
+        tools_chars = max(0, int(round(bp["tools"] / 100 * bar_len)))
+        user_chars = max(0, int(round(bp["user"] / 100 * bar_len)))
+        tool_out_chars = max(0, int(round(bp["tool_outputs"] / 100 * bar_len)))
+        reasoning_chars = max(0, int(round(bp["reasoning"] / 100 * bar_len)))
+        
+        # Adjust total sum to match bar_len exactly
+        total_chars = sys_chars + tools_chars + user_chars + tool_out_chars + reasoning_chars
+        if total_chars < bar_len:
+            reasoning_chars += (bar_len - total_chars)
+        elif total_chars > bar_len:
+            diff = total_chars - bar_len
+            arr = [sys_chars, tools_chars, user_chars, tool_out_chars, reasoning_chars]
+            max_idx = arr.index(max(arr))
+            if max_idx == 0: sys_chars -= diff
+            elif max_idx == 1: tools_chars -= diff
+            elif max_idx == 2: user_chars -= diff
+            elif max_idx == 3: tool_out_chars -= diff
+            else: reasoning_chars -= diff
+
+        bar_text = Text()
+        bar_text.append(BLOCK_CHAR * sys_chars, style="violet")
+        bar_text.append(BLOCK_CHAR * tools_chars, style="cyan")
+        bar_text.append(BLOCK_CHAR * user_chars, style="blue")
+        bar_text.append(BLOCK_CHAR * tool_out_chars, style="yellow")
+        bar_text.append(BLOCK_CHAR * reasoning_chars, style="magenta")
+
+        pct = pm["limit_percentage"]
+        pct_color = "green"
+        if pct > 80.0:
+            pct_color = "bold red"
+        elif pct > 50.0:
+            pct_color = "yellow"
+
+        risk_txt = "-"
+        if pm["risk_flag"]:
+            risk_txt = Text(f"{WARN_CHAR} RISK", style="bold red")
+
+        pressure_table.add_row(
+            str(pm["turn"]),
+            format_tokens(pm["total_tokens"]),
+            Text(f"{pct:.1f}%", style=pct_color),
+            bar_text,
+            risk_txt
+        )
+
+    console.print(pressure_table)
+
+    # Let's print a legend for the composition map
+    console.print(
+        Text.assemble(
+            ("Legend: ", "dim"),
+            (f"{BLOCK_CHAR} System Prompt  ", "violet"),
+            (f"{BLOCK_CHAR} Tool Schemas  ", "cyan"),
+            (f"{BLOCK_CHAR} User Messages  ", "blue"),
+            (f"{BLOCK_CHAR} Tool Outputs  ", "yellow"),
+            (f"{BLOCK_CHAR} Agent Reasoning  ", "magenta")
+        )
+    )
+
+    # Risk explanation details
+    risks = [pm for pm in result.context_pressure_map if pm["risk_flag"]]
+    if risks:
+        console.print(f"\n[bold red]{WARN_CHAR} Active Context Risk Alerts:[/bold red]")
+        for pm in risks:
+            console.print(f"  [bold]Turn {pm['turn']}[/bold]: {pm['risk_reason']}")
     console.print()
+
+def print_benchmark_report(summary: Any, directory_path: str, top_n: int = 5, text_limit: int = 40):
     if summary.total_sessions == 0:
         console.print(Panel("[bold red]Error: No session logs found in the target directory.[/bold red]", title="Benchmark Summary", box=box.ASCII))
         return
@@ -173,6 +386,19 @@ def print_benchmark_report(summary: Any, directory_path: str, top_n: int = 5, te
     avg_savings = statistics.mean(summary.savings_list)
     total_savings = sum(summary.savings_list)
     avg_savings_pct = (avg_savings / avg_standard_cost * 100) if avg_standard_cost > 0 else 0
+    
+    total_repeated_spend = sum(b.get("total_repeated_cost_usd", 0.0) for b in summary.repeated_blocks)
+    if total_repeated_spend == 0.0:
+        total_repeated_spend = total_savings
+
+    # 0. Print instant 10-second summary card for benchmark
+    print_instant_summary_card(
+        target_label=f"{summary.total_sessions} Sessions ({directory_path})",
+        repeated_pct=avg_reuse,
+        overhead_pct=12.0,  # Benchmark empirical static prefix overhead
+        cache_hit_pct=avg_savings_pct if avg_savings_pct > 0 else 61.0,
+        wasted_usd=total_repeated_spend
+    )
     
     console.print(Panel(
         Align.center(

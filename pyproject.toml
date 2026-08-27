@@ -30,3 +30,7 @@ context-audit = "context_audit.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["context_audit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

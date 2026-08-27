@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 class Session:
@@ -16,9 +17,17 @@ class Session:
         }
 
 def parse_session_json(file_path: str) -> Session:
-    """Parses a consolidated session.json file."""
+    """Parses a consolidated session.json file or JSON message array."""
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
+    
+    if isinstance(data, list):
+        # Raw array of messages
+        return Session(
+            system_instructions="You are an AI coding assistant.",
+            tools=[],
+            history=data
+        )
     
     return Session(
         system_instructions=data.get("system_instructions", ""),
@@ -27,69 +36,117 @@ def parse_session_json(file_path: str) -> Session:
     )
 
 def parse_transcript_jsonl(file_path: str) -> Session:
-    """Parses a line-delimited transcript.jsonl file from the IDE."""
+    """Parses a line-delimited transcript.jsonl / Claude / Cursor log file."""
     history = []
     
     system_instructions = (
-        "You are Antigravity, a powerful agentic AI coding assistant designed by the Google DeepMind team...\n"
+        "You are an agentic AI coding assistant.\n"
         "[System Prompt placeholders including Guidelines, Planning Mode, and Tool Declarations]"
     )
     
     observed_tools = set()
     
-    with open(file_path, 'r', encoding='utf-8') as f:
-        for line in f:
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        for line_num, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
             try:
                 step = json.loads(line)
-                source = step.get("source")
-                step_type = step.get("type")
-                content = step.get("content", "")
-                
-                # Check for tool calls
-                tool_calls = step.get("tool_calls", [])
-                for tc in tool_calls:
-                    name = tc.get("name")
-                    if name:
-                        observed_tools.add(name)
-                
-                # Map steps to history turns
-                if step_type == "USER_INPUT":
-                    history.append({
-                        "role": "user",
-                        "content": content,
-                        "step_index": step.get("step_index")
-                    })
-                elif step_type == "PLANNER_RESPONSE":
-                    msg = {
-                        "role": "model",
-                        "content": step.get("thinking", ""),
-                        "step_index": step.get("step_index")
-                    }
-                    if tool_calls:
-                        msg["tool_calls"] = tool_calls
-                    history.append(msg)
-                elif step_type in ["LIST_DIRECTORY", "VIEW_FILE", "GENERIC", "RUN_COMMAND", "REPLACE_FILE_CONTENT", "WRITE_TO_FILE"] or (source == "SYSTEM" and content):
-                    # Tool response
-                    history.append({
-                        "role": "tool",
-                        "name": (step_type or "system").lower(), # Approximate tool name
-                        "content": content,
-                        "step_index": step.get("step_index")
-                    })
-            except Exception as e:
-                # Silently skip bad lines
+            except Exception:
                 continue
+            
+            if not isinstance(step, dict):
+                continue
+
+            # 1. Antigravity IDE schema
+            step_type = step.get("type", "")
+            source = step.get("source", "")
+            content = step.get("content", "")
+            tool_calls = step.get("tool_calls", []) or []
+            
+            for tc in tool_calls:
+                name = tc.get("name") if isinstance(tc, dict) else str(tc)
+                if name:
+                    observed_tools.add(name)
+
+            if step_type == "USER_INPUT" or source == "USER_EXPLICIT":
+                history.append({
+                    "role": "user",
+                    "content": str(content) if content is not None else "",
+                    "step_index": step.get("step_index", line_num)
+                })
+            elif step_type == "PLANNER_RESPONSE" or (source == "MODEL" and "thinking" in step):
+                msg = {
+                    "role": "model",
+                    "content": str(step.get("thinking", content or "")),
+                    "step_index": step.get("step_index", line_num)
+                }
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
+                history.append(msg)
+            elif step_type in ["LIST_DIRECTORY", "VIEW_FILE", "GENERIC", "RUN_COMMAND", "REPLACE_FILE_CONTENT", "WRITE_TO_FILE"] or (source == "SYSTEM" and content):
+                history.append({
+                    "role": "tool",
+                    "name": (step_type or "system").lower(),
+                    "content": str(content),
+                    "step_index": step.get("step_index", line_num)
+                })
+            # 2. Claude Code Schema
+            elif step_type in ["user", "assistant", "tool_result"] or "message" in step:
+                msg_obj = step.get("message", step)
+                role = msg_obj.get("role", step_type)
+                msg_content = msg_obj.get("content", "")
                 
-    # Reconstruct some typical tool definitions based on what we observed
+                if isinstance(msg_content, list):
+                    text_parts = []
+                    extracted_tools = []
+                    for block in msg_content:
+                        if isinstance(block, dict):
+                            b_type = block.get("type")
+                            if b_type == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif b_type == "tool_use":
+                                t_name = block.get("name", "tool")
+                                observed_tools.add(t_name)
+                                extracted_tools.append({"name": t_name, "args": block.get("input", {})})
+                            elif b_type == "tool_result":
+                                text_parts.append(str(block.get("content", "")))
+                        else:
+                            text_parts.append(str(block))
+                    
+                    final_role = "model" if role == "assistant" else ("user" if role == "user" else "tool")
+                    item = {
+                        "role": final_role,
+                        "content": "\n".join(text_parts),
+                        "step_index": line_num
+                    }
+                    if extracted_tools:
+                        item["tool_calls"] = extracted_tools
+                    history.append(item)
+                else:
+                    final_role = "model" if role == "assistant" else ("user" if role == "user" else "tool")
+                    history.append({
+                        "role": final_role,
+                        "content": str(msg_content),
+                        "step_index": line_num
+                    })
+            # 3. Generic Role-Based Schema
+            elif "role" in step and ("content" in step or "text" in step):
+                r = step.get("role", "user")
+                final_role = "model" if r in ["assistant", "model"] else ("tool" if r == "tool" else "user")
+                history.append({
+                    "role": final_role,
+                    "content": str(step.get("content", step.get("text", ""))),
+                    "step_index": line_num
+                })
+
+    # Reconstruct tool definitions based on observed tools
     tools = []
     for tool_name in observed_tools:
-        # Mocking schemas for observed tools to make token estimation realistic
         tools.append({
             "name": tool_name,
-            "description": f"Mock schema for tool: {tool_name} to simulate schema tokens in context audit.",
+            "description": f"Tool schema for {tool_name}",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -113,15 +170,15 @@ def load_session(file_path: str) -> Session:
     if ext.lower() == '.jsonl':
         return parse_transcript_jsonl(file_path)
     elif ext.lower() == '.json':
-        # Let's peek inside to see if it's jsonl with .json extension or true json
-        with open(file_path, 'r', encoding='utf-8') as f:
-            first_char = f.read(1)
-        if first_char != '{':
-            # Might be jsonl
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                first_char = f.read(1).strip()
+            if first_char not in ['{', '[']:
+                return parse_transcript_jsonl(file_path)
+            return parse_session_json(file_path)
+        except Exception:
             return parse_transcript_jsonl(file_path)
-        return parse_session_json(file_path)
     else:
-        # Try JSON first, fallback to JSONL
         try:
             return parse_session_json(file_path)
         except Exception:
@@ -135,10 +192,44 @@ def find_transcript_files(directory_path: str) -> List[str]:
         
     for root, _, filenames in os.walk(directory_path):
         for filename in filenames:
-            # Match transcript.jsonl or files ending in .jsonl containing 'transcript'
-            if filename == 'transcript.jsonl' or (filename.endswith('.jsonl') and 'transcript' in filename.lower()):
+            fname_lower = filename.lower()
+            if fname_lower.endswith('_full.jsonl') or fname_lower.endswith('.full.jsonl'):
+                continue
+            if fname_lower.endswith('.jsonl') or fname_lower == 'transcript.jsonl':
                 files.append(os.path.join(root, filename))
-            # Match session.json or files ending in .json containing 'session'
-            elif filename == 'session.json' or (filename.endswith('.json') and 'session' in filename.lower()):
+            elif fname_lower == 'session.json' or (fname_lower.endswith('.json') and 'session' in fname_lower):
                 files.append(os.path.join(root, filename))
     return files
+
+def discover_session_logs(limit: Optional[int] = 20) -> List[str]:
+    """Auto-discovers local session logs across standard tools and current workspace, returning the newest first."""
+    discovered = []
+    home = Path.home()
+    
+    candidate_dirs = [
+        Path(".").resolve(),  # Current workspace / dir
+        home / ".claude" / "projects",
+        home / ".claude" / "transcripts",
+        home / ".claude",
+        home / ".cursor",
+        home / ".gemini" / "antigravity-ide" / "brain",
+        home / ".aider"
+    ]
+    
+    seen = set()
+    for c_dir in candidate_dirs:
+        if c_dir.exists() and c_dir.is_dir():
+            found = find_transcript_files(str(c_dir))
+            for f in found:
+                abs_f = os.path.abspath(f)
+                if abs_f not in seen:
+                    seen.add(abs_f)
+                    discovered.append(abs_f)
+                    
+    # Sort newest first by last modified time
+    discovered.sort(key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True)
+    
+    if limit is not None and limit > 0:
+        return discovered[:limit]
+    return discovered
+

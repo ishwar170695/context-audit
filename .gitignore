@@ -108,3 +108,9 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Local research outputs & temporary logs
+TraceLab/
+entropy_output/
+session_report*.txt
+temp_*

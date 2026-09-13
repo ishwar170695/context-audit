@@ -203,33 +203,7 @@ def find_transcript_files(directory_path: str) -> List[str]:
 
 def discover_session_logs(limit: Optional[int] = 20) -> List[str]:
     """Auto-discovers local session logs across standard tools and current workspace, returning the newest first."""
-    discovered = []
-    home = Path.home()
-    
-    candidate_dirs = [
-        Path(".").resolve(),  # Current workspace / dir
-        home / ".claude" / "projects",
-        home / ".claude" / "transcripts",
-        home / ".claude",
-        home / ".cursor",
-        home / ".gemini" / "antigravity-ide" / "brain",
-        home / ".aider"
-    ]
-    
-    seen = set()
-    for c_dir in candidate_dirs:
-        if c_dir.exists() and c_dir.is_dir():
-            found = find_transcript_files(str(c_dir))
-            for f in found:
-                abs_f = os.path.abspath(f)
-                if abs_f not in seen:
-                    seen.add(abs_f)
-                    discovered.append(abs_f)
-                    
-    # Sort newest first by last modified time
-    discovered.sort(key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True)
-    
-    if limit is not None and limit > 0:
-        return discovered[:limit]
-    return discovered
+    from context_audit.detectors import run_discovery
+    report = run_discovery(limit=limit)
+    return report.all_sessions
 

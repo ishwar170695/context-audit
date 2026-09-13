@@ -112,5 +112,6 @@ env/
 # Local research outputs & temporary logs
 TraceLab/
 entropy_output/
+research/entropy_output/
 session_report*.txt
 temp_*

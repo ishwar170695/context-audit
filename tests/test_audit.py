@@ -104,6 +104,71 @@ def test_directory_scanning_and_benchmarking():
             assert len(b_data["reuse_ratios"]) == b_data["count"]
             assert len(b_data["peak_sizes"]) == b_data["count"]
             assert len(b_data["cumulative_tokens"]) == b_data["count"]
-            assert len(b_data["savings"]) == b_data["count"]
-            
     assert found_populated_bucket
+
+def test_math_breakdown_and_exports():
+    import json
+    from context_audit.reporter import export_json_report, export_markdown_report, print_audit_report
+    
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    sample_path = os.path.join(current_dir, "..", "sample_data", "sample_session.json")
+    session = load_session(sample_path)
+    result = analyze_session(session, input_price=4.00, cache_price=1.00)
+    
+    # Check math breakdown
+    mb = result.math_breakdown
+    assert mb["total_cumulative_tokens"] > 0
+    assert mb["input_price_per_m"] == 4.00
+    assert mb["cache_price_per_m"] == 1.00
+    assert mb["effective_discount_rate_pct"] == 75.0 # (1 - 1/4) * 100
+    assert mb["reused_tokens"] >= 0
+    
+    # Check JSON export
+    json_str = export_json_report(result, "sample_session.json")
+    parsed = json.loads(json_str)
+    assert parsed["target"] == "sample_session.json"
+    assert parsed["summary"]["cumulative_tokens"] == result.total_tokens_across_session
+    assert parsed["summary"]["effective_discount_rate_pct"] == 75.0
+    assert "math_breakdown" in parsed
+    
+    # Check Markdown export
+    md_str = export_markdown_report(result, "sample_session.json", show_math=True, show_wasters=True)
+    assert "# Context Audit Report" in md_str
+    assert "75% prefix cache discount" in md_str
+    assert "## Mathematical Verification" in md_str
+    assert "## Top Repeated Context Blocks" in md_str
+    
+    # Check conservative default terminal report runs cleanly
+    print_audit_report(result, "sample_session.json")
+
+def test_format_display_path_disambiguation():
+    from context_audit.reporter import format_display_path
+
+    # 1. Antigravity path with UUID
+    p1 = "C:/Users/test/.gemini/antigravity-ide/brain/7e05f9ce-4995-4152-9db9-44edbe2e42e9/.system_generated/logs/transcript.jsonl"
+    p2 = "C:/Users/test/.gemini/antigravity-ide/brain/1c8491ef-d3bb-4f43-bdc4-8f5cc724d104/.system_generated/logs/transcript.jsonl"
+    d1 = format_display_path(p1)
+    d2 = format_display_path(p2)
+    assert d1 != d2, f"Expected distinct paths, but got {d1} and {d2}"
+    assert "7e05f9ce" in d1
+    assert "1c8491ef" in d2
+    assert len(d1) <= 55
+
+    # 2. Claude Code project path
+    claude_p = "C:/Users/test/.claude/projects/my-awesome-app/transcripts/session_1234.jsonl"
+    d_claude = format_display_path(claude_p)
+    assert "my-awesome-app" in d_claude
+    assert "session_1234.jsonl" in d_claude
+    assert len(d_claude) <= 55
+
+    # 3. Codex session path
+    codex_p = "C:/Users/test/.codex/sessions/run_2026_09_13/transcript.jsonl"
+    d_codex = format_display_path(codex_p)
+    assert "run_2026_09_13" in d_codex
+    assert len(d_codex) <= 55
+
+    # 4. Short path untouched
+    short_p = "./logs/session.jsonl"
+    assert format_display_path(short_p) == "./logs/session.jsonl"
+
+

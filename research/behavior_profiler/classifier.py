@@ -1,5 +1,5 @@
 from typing import List
-from context_audit.events import RawEvent, SemanticEvent
+from research.behavior_profiler.events import RawEvent, SemanticEvent
 
 def classify_raw_event(raw: RawEvent) -> List[SemanticEvent]:
     # Antigravity native tools

@@ -1,7 +1,7 @@
 import json
 import re
 from typing import List
-from context_audit.events import RawEvent
+from research.behavior_profiler.events import RawEvent
 
 class AntigravityParser:
     def __init__(self, filepath: str):

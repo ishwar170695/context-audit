@@ -152,13 +152,15 @@ def test_context_pressure_and_risk():
     assert last_turn_pm["total_tokens"] > 1000
     assert last_turn_pm["limit_percentage"] > 0
     
-    # Ensure breakdown contains expected categories
+    # Ensure breakdown contains expected categories with measured positive percentages
     breakdown = last_turn_pm["breakdown_pct"]
     assert "system" in breakdown
     assert "tools" in breakdown
-    assert "user" in breakdown
+    assert "user" in breakdown and breakdown["user"] > 0
     assert "tool_outputs" in breakdown
-    assert "reasoning" in breakdown
+    assert "reasoning" in breakdown and breakdown["reasoning"] > 0
+    total_pct = breakdown["system"] + breakdown["tools"] + breakdown["user"] + breakdown["tool_outputs"] + breakdown["reasoning"]
+    assert abs(total_pct - 100.0) < 0.01
     
     # Risk flag check (high pressure and critical elements in oldest 20%)
     # Let's see if risk is flagged in the timeline

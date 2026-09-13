@@ -6,7 +6,6 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from typing import Dict, List, Any, Tuple, Set, Optional
-from context_audit.events import SemanticEvent
 
 # Try importing tiktoken, define fallback if not present
 try:
@@ -24,6 +23,11 @@ except ImportError:
         # Fallback estimation: ~4 chars per token for English text
         return max(1, int(len(text) * 0.26))
     HAS_TIKTOKEN = False
+
+# Default LLM Pricing (USD per Million Tokens)
+DEFAULT_INPUT_PRICE_PER_M = 3.00
+DEFAULT_CACHE_PRICE_PER_M = 0.30
+DEFAULT_CONTEXT_LIMIT = 100000
 
 def compute_token_entropy(text: str) -> float:
     """Computes Shannon entropy (base 2) in bits over token distribution."""
@@ -133,6 +137,12 @@ class AuditResult:
         self.potential_cache_savings = 0.0
         self.cache_savings_percentage = 0.0
         
+        # Pricing Metadata & Skeptic's Audit Math
+        self.input_price = DEFAULT_INPUT_PRICE_PER_M
+        self.cache_price = DEFAULT_CACHE_PRICE_PER_M
+        self.discount_pct = 0.0
+        self.math_breakdown = {}
+        
         # Advanced Analysis
         self.tool_entropy_results = []
         self.belief_drift_results = []
@@ -140,13 +150,15 @@ class AuditResult:
 
 def analyze_session(
     session: Any, 
-    input_price: float = 3.00, 
-    cache_price: float = 0.30,
-    context_limit: int = 100000,
-    use_llm: bool = False,
+    input_price: float = DEFAULT_INPUT_PRICE_PER_M, 
+    cache_price: float = DEFAULT_CACHE_PRICE_PER_M,
+    context_limit: int = DEFAULT_CONTEXT_LIMIT,
     entropy_threshold: float = 2.0
 ) -> AuditResult:
     result = AuditResult()
+    result.input_price = input_price
+    result.cache_price = cache_price
+    result.discount_pct = (1.0 - (cache_price / input_price)) * 100.0 if input_price > 0 else 0.0
     
     sys_prompt = getattr(session, "system_instructions", "") or ""
     sys_tokens = get_token_count(sys_prompt)
@@ -244,6 +256,8 @@ def analyze_session(
         turn_tool_tokens = total_tools_tokens
         
         turn_chat_tokens = 0
+        turn_user_tokens = 0
+        turn_reasoning_tokens = 0
         turn_retrieval_tokens = 0
         
         # Register static blocks for this turn
@@ -258,7 +272,11 @@ def analyze_session(
             
             if cm["role"] == "tool":
                 turn_retrieval_tokens += cm["tokens"]
+            elif cm["role"] == "user":
+                turn_user_tokens += cm["tokens"]
+                turn_chat_tokens += cm["tokens"]
             else:
+                turn_reasoning_tokens += cm["tokens"]
                 turn_chat_tokens += cm["tokens"]
                 
         turn_total_tokens = turn_sys_tokens + turn_tool_tokens + turn_chat_tokens + turn_retrieval_tokens
@@ -304,7 +322,9 @@ def analyze_session(
                 "System Prompt": turn_sys_tokens,
                 "Tool Schemas": turn_tool_tokens,
                 "Chat History": turn_chat_tokens,
-                "Retrieved Content": turn_retrieval_tokens
+                "Retrieved Content": turn_retrieval_tokens,
+                "User Tokens": turn_user_tokens,
+                "Reasoning Tokens": turn_reasoning_tokens
             },
             "contributors": delta_contributors
         })
@@ -512,8 +532,8 @@ def analyze_session(
         retrieval_pct = (bd["Retrieved Content"] / total_tok) * 100 if total_tok > 0 else 0
         chat_pct = (bd["Chat History"] / total_tok) * 100 if total_tok > 0 else 0
         
-        user_pct = chat_pct * 0.7
-        reasoning_pct = chat_pct * 0.3
+        user_pct = (bd.get("User Tokens", 0) / total_tok) * 100 if total_tok > 0 else 0
+        reasoning_pct = (bd.get("Reasoning Tokens", 0) / total_tok) * 100 if total_tok > 0 else 0
         
         # Risk assessment: context pressure high + critical system guidelines or task definitions in oldest content
         risk_flag = False
@@ -544,6 +564,28 @@ def analyze_session(
             }
         })
     result.context_pressure_map = pressure_map
+    
+    # Populate Skeptic's Audit Math
+    overhead_tokens = sys_tokens + total_tools_tokens
+    result.math_breakdown = {
+        "total_cumulative_tokens": total_cumulative_tokens,
+        "final_context_size": result.final_context_size,
+        "peak_context_size": result.peak_context_size,
+        "total_turns": len(timeline),
+        "reused_tokens": total_reused,
+        "context_reuse_ratio_pct": result.context_reuse_ratio,
+        "system_tokens": sys_tokens,
+        "tool_schema_tokens": total_tools_tokens,
+        "overhead_tokens": overhead_tokens,
+        "overhead_pct": (overhead_tokens / total_cumulative_tokens * 100.0) if total_cumulative_tokens > 0 else 0.0,
+        "input_price_per_m": input_price,
+        "cache_price_per_m": cache_price,
+        "standard_input_cost_usd": standard_input_cost,
+        "cached_input_cost_usd": cached_input_cost,
+        "potential_cache_savings_usd": result.potential_cache_savings,
+        "cache_savings_pct": result.cache_savings_percentage,
+        "effective_discount_rate_pct": result.discount_pct
+    }
     
     return result
 
@@ -632,16 +674,32 @@ def run_benchmark(
             summary.buckets[b_name]["cumulative_tokens"].append(result.total_tokens_across_session)
             summary.buckets[b_name]["savings"].append(result.potential_cache_savings)
             
+            # Only register true repeated blocks:
+            # 1. System prompt & tools (static overhead)
+            # 2. Duplicate occurrences: blocks that appeared >1 time in session.history
+            # (Avoid treating normal conversational history retention as duplicated artifacts)
+            msg_history_counts = {}
+            for m in session.history:
+                c = m.get("content", "") or ""
+                if c:
+                    mh = hashlib.md5(c.encode("utf-8")).hexdigest()
+                    msg_history_counts[mh] = msg_history_counts.get(mh, 0) + 1
+
             for h, block in result.block_occurrences.items():
+                b_type = block["type"]
+                # If it's a message, only record if it appeared >1 time in history or will be checked across sessions
+                raw_count = msg_history_counts.get(h, 1) if b_type == "Message" else 1
                 if h not in global_blocks:
                     global_blocks[h] = {
                         "text": block["text"],
                         "type": block["type"],
                         "name": block["name"],
                         "tokens": block["tokens"],
-                        "occurrences_per_file": {}
+                        "occurrences_per_file": {},
+                        "distinct_occurrences_per_file": {}
                     }
                 global_blocks[h]["occurrences_per_file"][f_path] = block["occurrences"]
+                global_blocks[h]["distinct_occurrences_per_file"][f_path] = raw_count
             
             parsed_count += 1
         except Exception as e:
@@ -652,14 +710,23 @@ def run_benchmark(
     repeated_blocks_list = []
     for h, g_block in global_blocks.items():
         sessions_count = len(g_block["occurrences_per_file"])
-        total_occurrences = sum(g_block["occurrences_per_file"].values())
-        
-        total_repeated = 0
-        for f_path, count in g_block["occurrences_per_file"].items():
-            if count > 1:
-                total_repeated += (count - 1) * g_block["tokens"]
-                
-        if total_occurrences > 1:
+        b_type = g_block["type"]
+
+        # For static System/Tool blocks, repetition across turns and sessions is genuine fixed overhead
+        if b_type in ["System Prompt", "Tool Schema"]:
+            total_occurrences = sum(g_block["occurrences_per_file"].values())
+            total_repeated = sum(max(0, c - 1) * g_block["tokens"] for c in g_block["occurrences_per_file"].values())
+        else:
+            # For messages (tool output, user, assistant), only count as repeated artifact if:
+            # - Appeared in more than 1 session (cross-session duplicate)
+            # - OR appeared multiple times in history within a session (duplicate tool call / duplicate content)
+            total_distinct = sum(g_block["distinct_occurrences_per_file"].values())
+            if sessions_count <= 1 and total_distinct <= 1:
+                continue
+            total_occurrences = total_distinct if b_type == "Message" else sum(g_block["occurrences_per_file"].values())
+            total_repeated = max(0, total_distinct - 1) * g_block["tokens"] if b_type == "Message" else sum(max(0, c - 1) * g_block["tokens"] for c in g_block["occurrences_per_file"].values())
+
+        if total_occurrences > 1 or sessions_count > 1:
             repeated_blocks_list.append({
                 "name": g_block["name"],
                 "type": g_block["type"],
@@ -675,60 +742,3 @@ def run_benchmark(
     summary.repeated_blocks = repeated_blocks_list
     
     return summary
-
-class BehaviorAnalyzer:
-    def __init__(self, events: List[SemanticEvent]):
-        self.events = events
-        
-    def analyze(self) -> Dict[str, Any]:
-        if not self.events:
-            return {}
-
-        file_reads = defaultdict(list)
-        
-        for event in self.events:
-            if event.method == "READ" and event.category == "RESOURCE_ACCESSED":
-                file_reads[event.resource].append(event.index)
-                
-        unique_files_read = len(file_reads)
-        total_reads = sum(len(reads) for reads in file_reads.values())
-        rediscovery_ratio = total_reads / max(1, unique_files_read)
-
-        all_gaps = []
-        for reads in file_reads.values():
-            if len(reads) > 1:
-                for i in range(1, len(reads)):
-                    all_gaps.append(reads[i] - reads[i-1])
-
-        session_median_gap = statistics.median(all_gaps) if all_gaps else 0
-        recovery_threshold = max(5, session_median_gap * 2)
-
-        total_recovery_reads = 0
-        for reads in file_reads.values():
-            if len(reads) > 1:
-                for i in range(1, len(reads)):
-                    if (reads[i] - reads[i-1]) > recovery_threshold:
-                        total_recovery_reads += 1
-
-        navigation_loops = 0
-        for i, event in enumerate(self.events):
-            if event.method == "READ" and i >= 3:
-                prev1 = self.events[i-1]
-                prev2 = self.events[i-2]
-                prev3 = self.events[i-3]
-                if prev1.method == "SEARCH" and prev2.method == "READ" and prev3.method == "SEARCH":
-                    navigation_loops += 1
-            if event.method == "LIST" and i >= 1:
-                if self.events[i-1].method == "LIST":
-                    navigation_loops += 1
-
-        return {
-            "unique_files_read": unique_files_read,
-            "total_reads": total_reads,
-            "rediscovery_ratio": rediscovery_ratio,
-            "session_median_gap": session_median_gap,
-            "recovery_threshold_used": recovery_threshold,
-            "total_recovery_reads": total_recovery_reads,
-            "navigation_loops": navigation_loops,
-            "total_events": len(self.events)
-        }

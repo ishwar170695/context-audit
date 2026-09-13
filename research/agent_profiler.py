@@ -1,8 +1,8 @@
 import sys
 import os
-from context_audit.parsers import AntigravityParser, TraceLabClaudeParser
-from context_audit.classifier import classify_raw_event
-from context_audit.analyzer import BehaviorAnalyzer
+from research.behavior_profiler.parsers import AntigravityParser, TraceLabClaudeParser
+from research.behavior_profiler.classifier import classify_raw_event
+from research.behavior_profiler.analyzer import BehaviorAnalyzer
 
 def profile_session(transcript_path: str):
     # Very rudimentary heuristic to pick parser:

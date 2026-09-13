@@ -2,24 +2,128 @@
 
 > **85–99% of your coding agent bill is invisible input tokens. Inspect your context economics in 5 seconds.**
 
+```text
+context-audit summary ─────────────────────────────────────────────────────────
+
+  Target: session_2026-06-19.jsonl
+  Cumulative Session Tokens: 2.8M tokens
+
+  94%  repeated context (Context Reuse Ratio) -> Paid for 2x+ (identical file reads & tool history)
+  12%  fixed overhead -> Tool schemas & system instructions before prompt
+  89%  effective cache rate -> Eligible for 90% prefix cache discount
+
+  Estimated wasted spend: ~$7.28
+
+───────────────────────────────────────────────────────────────────────────────
+Tip: Run with --wasters for duplicate files, --composition for visual map, or --show-math for audit formulas.
+```
+
 ---
 
-## 📈 The Problem
+## 💡 What Problem Does This Solve?
 
-Almost every engineer building or using agentic coding tools (like Claude Code, Cursor, Aider, or custom IDE agents) complains about runaway context growth and mounting API bills. 
+When you use AI coding agents (Claude Code, Cursor, Antigravity, or custom agent loops), you aren't paying for what you type. You are paying for the compounding weight of **raw terminal command outputs, repeated file reads, and tool declarations re-sent on every single turn**.
 
-When sessions get long, you aren't paying for your prompts—you’re paying for the compounding weight of raw terminal logs, repeated file reads, and tool history re-sent on every single turn.
+In long sessions, 85% to 99% of the tokens billed by API providers are identical repetitions of earlier turns.
 
-We built `context-audit` as a **zero-config, 100% local CLI** that parses your local session transcripts, measures context reuse, models dynamic prefix caching, and identifies true redundant waste.
+`context-audit` is a **zero-config, 100% local CLI** that parses your local agent transcripts, calculates context reuse, models dynamic prefix caching savings, and pinpoints preventable waste.
 
 ---
 
-## ⚡ Quick Start (Zero Config)
+## ⚡ Quick Start
 
 ```bash
-# Auto-detects local Claude Code, Cursor, and IDE agent session logs
-pip install context-audit && context-audit
+# Install CLI
+pip install context-audit
+
+# 1. Zero-config auto-discovery of local session logs:
+context-audit
+
+# 2. Check agent discovery diagnostics & candidate paths:
+context-audit doctor
+
+# 3. Explore with a sample session (if you don't have local logs yet):
+context-audit demo
 ```
+
+---
+
+## 📖 Plain-English Glossary
+
+* **Prefix Caching**: Modern LLM providers (Anthropic, OpenAI) discount tokens by up to 90% when consecutive turns share an identical message prefix. `context-audit` models this dynamic prefix breakpoint economics.
+* **Context Reuse Ratio**: The percentage of cumulative session tokens that were identical re-transmissions of content already seen in earlier turns.
+* **Fixed Overhead**: The baseline token cost of system instructions and tool definitions that occupy context before your first user prompt.
+* **Context Pressure**: The percentage of the model's context window limit (e.g. 100k or 200k tokens) consumed by the session, identifying when older instructions risk attention degradation.
+* **Skeptic's Audit (`--show-math`)**: A step-by-step arithmetic verification table breaking down exact formulas, counts, and price calculations.
+
+---
+
+## 🧭 Agent Support Matrix
+
+| Agent | Detect | Locate | Parse | End-to-End Zero-Config | Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Antigravity** | ✓ | ✓ | ✓ | **✓ Supported** | Discovers `~/.gemini/antigravity-ide/brain` transcripts |
+| **Claude Code** | ✓ | ✓ | ✓ | **✓ Supported** | Discovers `~/.claude` transcripts and session logs |
+| **Codex** | ✓ | ✓ | ✓ | **Experimental** | Scans `~/.codex` / `~/.openai` JSON/JSONL logs |
+| **Cursor** | ✓ | ✗ | ? | **✗ Unsupported format** | Cursor stores chat history in SQLite (`state.vscdb`) |
+| **Aider** | ✓ | ✗ | ✗ | **✗ Unsupported format** | Aider stores history as Markdown (`.aider.chat.history.md`) |
+| **Local Workspace** | ✓ | ✓ | ✓ | **✓ Supported** | Scans current directory for `.jsonl` / `session.json` |
+
+---
+
+## 🚀 CLI Usage: 3 Core Workflows
+
+`context-audit` has three distinct commands that fit your workflow:
+
+```bash
+# 1. "How did my last session go?" (Audits your most recent session automatically)
+context-audit
+
+# 2. "How am I doing overall?" (Aggregates all sessions discovered across your machine)
+context-audit benchmark
+
+# 3. "Audit this specific log file"
+context-audit run path/to/transcript.jsonl
+```
+
+### Output Tiers & Scriptable Flags
+
+Display and export flags work orthogonally across all commands:
+
+```bash
+# Conservative 10-second default (Summary Card alone):
+context-audit
+
+# Inspect top redundant files and largest context consumers:
+context-audit --wasters
+
+# Visual composition map (System vs Tools vs User vs Outputs vs Reasoning):
+context-audit --composition
+
+# Skeptic's Audit (transparent step-by-step arithmetic verification):
+context-audit --show-math
+
+# Full comprehensive report (timeline, anomaly alerts, belief drift):
+context-audit --full
+
+# Machine-readable JSON export (pipe-safe for CI/CD gates and scripts):
+context-audit --json
+
+# GitHub-flavored Markdown export (ready to pipe into PRs and issues):
+context-audit --markdown
+```
+
+---
+
+## 🔒 Verifiable Trust: 100% Local & Zero Telemetry
+
+`context-audit` is designed for privacy-conscious developers and sensitive codebases:
+
+* **Zero Network Requests**: The CLI never initiates an outbound network connection. It has no telemetry, no tracking, and sends no data anywhere.
+* **Minimal Dependencies**: Inspect `pyproject.toml`—the package depends solely on:
+  * `rich` (for terminal formatting)
+  * `tiktoken` (for local, offline BPE token counting)
+* **Local Parsing**: Transcripts are read directly from your local filesystem and analyzed strictly in-memory.
 
 ---
 
@@ -88,42 +192,12 @@ This dead payload pushes context windows toward the 100k/200k token limits, incr
 
 ---
 
-## 📊 Terminal Run Output
+## 🔬 Research & Empirical Reproducibility
 
-Running `context-audit` instantly outputs a clean summary card and timeline report:
-
-```text
-+--------------------------- context-audit summary ---------------------------+
-|   Target: 27 Sessions (Auto-Discovered)                                     |
-|                                                                             |
-|   93%  repeated context (paid for twice+)                                   |
-|   12%  fixed overhead (tools/system prompt before you typed)                |
-|   89%  effective cache hit rate (target benchmark: ~86%)                    |
-|                                                                             |
-|   Estimated wasted spend: ~$267.12                                          |
-|                                                                             |
-+-----------------------------------------------------------------------------+
-[*] My context-audit: 93% repeated context | 89% cache hit rate | ~$267.12 wasted. Run yours: pip install context-audit && context-audit
-```
+The standalone statistical tools and scripts used in our research (including the $p < 0.0001$ Mann-Whitney U test on tool output entropy) are maintained in the [`research/`](research/) directory. See [`research/README.md`](research/README.md) for reproduction commands.
 
 ---
 
-## 🚀 CLI Usage
+## 📄 License
 
-```bash
-# 1. Zero-config auto-discovery across ~/.claude, ~/.cursor, and local workspace:
-context-audit
-
-# 2. Audit a specific session transcript:
-context-audit run path/to/transcript.jsonl
-
-# 3. Benchmark a directory recursively:
-context-audit benchmark path/to/logs_directory
-```
-
----
-
-## 🔒 Privacy & Offline Guarantee
-
-* **100% Local**: No network requests, no telemetry, no tracking, no data leaves your machine.
-* **Open Source**: MIT Licensed.
+MIT License. See [LICENSE](LICENSE).

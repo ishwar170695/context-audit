@@ -46,25 +46,75 @@ class AgentDetector:
             "sessions": sessions,
         }
 
-def _scan_for_transcripts(paths: List[Path]) -> List[str]:
-    """Helper to scan directories for transcript.jsonl and session.json files."""
+EXCLUDED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "appdata",
+    "local settings",
+    "application data",
+    "library",
+    ".cache",
+    ".npm",
+    ".yarn",
+    ".pnpm-store",
+    ".cargo",
+    ".rustup",
+    ".gradle",
+    ".m2",
+    "dist",
+    "build",
+    "target",
+    "out",
+    ".next",
+    ".nuxt",
+    ".antigravity",
+    ".vscode",
+    ".idea",
+}
+
+def _scan_for_transcripts(paths: List[Path], max_depth: int = 5) -> List[str]:
+    """Helper to scan directories for transcript.jsonl and session.json files with directory pruning and depth limits."""
     discovered = []
     seen = set()
+    home_resolved = Path.home().resolve()
     
     for p in paths:
         if not p.exists():
             continue
+        resolved_p = p.resolve()
         if p.is_file():
             fname_lower = p.name.lower()
             if not (fname_lower.endswith('_full.jsonl') or fname_lower.endswith('.full.jsonl')):
                 if fname_lower.endswith('.jsonl') or fname_lower.endswith('.json'):
-                    abs_p = str(p.resolve())
+                    abs_p = str(resolved_p)
                     if abs_p not in seen:
                         seen.add(abs_p)
                         discovered.append(abs_p)
             continue
             
-        for root, _, filenames in os.walk(str(p)):
+        is_home = (resolved_p == home_resolved)
+        limit_depth = 1 if is_home else max_depth
+        base_depth = len(resolved_p.parts)
+
+        for root, dirs, filenames in os.walk(str(resolved_p), topdown=True):
+            # Prune excluded directories in-place to prevent traversing massive dependency/cache trees
+            dirs[:] = [d for d in dirs if d.lower() not in EXCLUDED_DIRS]
+            
+            # Enforce max depth relative to root path
+            cur_depth = len(Path(root).resolve().parts) - base_depth
+            if cur_depth >= limit_depth:
+                dirs[:] = []
+
             for filename in filenames:
                 fname_lower = filename.lower()
                 if fname_lower.endswith('_full.jsonl') or fname_lower.endswith('.full.jsonl'):
@@ -230,16 +280,19 @@ class WorkspaceDetector(AgentDetector):
         return True
 
     def get_candidate_paths(self) -> List[Path]:
-        return [Path(".").resolve()]
+        return [Path.cwd().resolve()]
 
     def find_sessions(self) -> List[str]:
-        return _scan_for_transcripts(self.get_candidate_paths())
+        cwd = Path.cwd().resolve()
+        if cwd == Path.home().resolve():
+            return []
+        return _scan_for_transcripts(self.get_candidate_paths(), max_depth=3)
 
 DEFAULT_DETECTORS = [
-    WorkspaceDetector(),
     AntigravityDetector(),
     ClaudeCodeDetector(),
     CodexDetector(),
+    WorkspaceDetector(),
     CursorDetector(),
     AiderDetector(),
 ]

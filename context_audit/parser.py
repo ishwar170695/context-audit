@@ -184,13 +184,24 @@ def load_session(file_path: str) -> Session:
         except Exception:
             return parse_transcript_jsonl(file_path)
 
-def find_transcript_files(directory_path: str) -> List[str]:
-    """Finds all transcript.jsonl and similar session files recursively under directory_path."""
+def find_transcript_files(directory_path: str, max_depth: int = 5) -> List[str]:
+    """Finds all transcript.jsonl and similar session files recursively under directory_path with directory pruning and depth limits."""
     files = []
     if not os.path.isdir(directory_path):
         return files
         
-    for root, _, filenames in os.walk(directory_path):
+    from pathlib import Path
+    from context_audit.detectors import EXCLUDED_DIRS
+    resolved_path = Path(directory_path).resolve()
+    base_depth = len(resolved_path.parts)
+    is_home = (resolved_path == Path.home().resolve())
+    effective_depth = 1 if is_home else max_depth
+
+    for root, dirs, filenames in os.walk(str(resolved_path), topdown=True):
+        dirs[:] = [d for d in dirs if d.lower() not in EXCLUDED_DIRS]
+        cur_depth = len(Path(root).resolve().parts) - base_depth
+        if cur_depth >= effective_depth:
+            dirs[:] = []
         for filename in filenames:
             fname_lower = filename.lower()
             if fname_lower.endswith('_full.jsonl') or fname_lower.endswith('.full.jsonl'):

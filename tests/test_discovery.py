@@ -113,3 +113,49 @@ def test_auto_discover_no_sessions_fallback(monkeypatch, capsys):
     
     # Should not raise, should show helpful fallback advice
     cli.run_auto_discover()
+
+def test_workspace_detector_skips_home_directory(monkeypatch):
+    detector = WorkspaceDetector()
+    monkeypatch.setattr(Path, "cwd", lambda: Path.home())
+    # When CWD is home, WorkspaceDetector must not attempt to recursively scan home
+    sessions = detector.find_sessions()
+    assert sessions == []
+
+def test_scan_for_transcripts_prunes_excluded_dirs_and_depth():
+    from context_audit.detectors import _scan_for_transcripts
+    from context_audit.parser import find_transcript_files
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        # Create excluded directory structure
+        (root / "node_modules" / "pkg").mkdir(parents=True)
+        with open(root / "node_modules" / "pkg" / "session.json", "w") as f:
+            f.write('{"turns": []}')
+            
+        (root / ".git" / "logs").mkdir(parents=True)
+        with open(root / ".git" / "logs" / "transcript.jsonl", "w") as f:
+            f.write('{"type":"USER_INPUT"}\n')
+
+        # Create valid transcript in shallow directory
+        (root / "project" / "logs").mkdir(parents=True)
+        valid_file = root / "project" / "logs" / "transcript.jsonl"
+        with open(valid_file, "w") as f:
+            f.write('{"type":"USER_INPUT"}\n')
+
+        # Create deep transcript beyond max_depth 2
+        (root / "a" / "b" / "c" / "d").mkdir(parents=True)
+        deep_file = root / "a" / "b" / "c" / "d" / "transcript.jsonl"
+        with open(deep_file, "w") as f:
+            f.write('{"type":"USER_INPUT"}\n')
+
+        found = _scan_for_transcripts([root], max_depth=2)
+        assert str(valid_file.resolve()) in found
+        assert not any("node_modules" in f for f in found)
+        assert not any(".git" in f for f in found)
+        assert str(deep_file.resolve()) not in found
+
+        parser_found = find_transcript_files(str(root), max_depth=2)
+        assert any(str(valid_file.name) in f for f in parser_found)
+        assert not any("node_modules" in f for f in parser_found)
+        assert not any(".git" in f for f in parser_found)
+        assert not any(str(deep_file.resolve()) in f for f in parser_found)

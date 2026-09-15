@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from context_audit import __version__
-from context_audit.parser import load_session, discover_session_logs
+from context_audit.parser import load_session, discover_session_logs, session_fs_path
 from context_audit.analyzer import analyze_session, run_benchmark
 from context_audit.reporter import (
     print_audit_report, 
@@ -42,7 +42,7 @@ def main():
     # If first argument is a file or dir that exists and not a recognized command, default to 'run <file>' or 'benchmark <dir>'
     recognized_commands = ["run", "benchmark", "doctor", "demo", "-h", "--help", "-v", "--version"]
     if len(sys.argv) == 2 and sys.argv[1] not in recognized_commands:
-        if os.path.isfile(sys.argv[1]):
+        if os.path.isfile(sys.argv[1]) or os.path.isfile(session_fs_path(sys.argv[1])):
             sys.argv.insert(1, "run")
         elif os.path.isdir(sys.argv[1]):
             sys.argv.insert(1, "benchmark")
@@ -67,6 +67,7 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output audit results as machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Output audit results as GitHub-flavored Markdown.")
     parser.add_argument("--share", action="store_true", help="Print a shareable one-line summary quote.")
+    parser.add_argument("--session", type=str, default=None, help="Cursor session/composer ID or index when auditing SQLite state.vscdb.")
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
@@ -85,6 +86,7 @@ def main():
     run_parser.add_argument("--json", action="store_true", help="Output audit results as JSON.")
     run_parser.add_argument("--markdown", action="store_true", help="Output audit results as Markdown.")
     run_parser.add_argument("--share", action="store_true", help="Print shareable one-line quote.")
+    run_parser.add_argument("--session", type=str, default=None, help="Cursor session/composer ID or index when auditing SQLite state.vscdb.")
 
     # benchmark command
     bench_parser = subparsers.add_parser("benchmark", help="Benchmark and aggregate token usage/costs across multiple sessions recursively.")
@@ -131,7 +133,7 @@ def main():
     elif args.command == "run":
         try:
             # 1. Parse log
-            session = load_session(args.log_path)
+            session = load_session(args.log_path, session_id=getattr(args, "session", None))
             
             # 2. Analyze
             result = analyze_session(
@@ -404,11 +406,21 @@ def run_auto_discover(args=None):
     if not is_export:
         console.print(f"[green]Discovered {len(discovered_files)} agent session log(s). Analyzing...[/green]")
 
-    # Filter out empty files (0 bytes) and sort by mtime descending (newest first)
-    valid_sessions = [f for f in discovered_files if os.path.exists(f) and os.path.getsize(f) > 0]
+    from context_audit.parser import (
+        session_ref_exists,
+        session_ref_size,
+        session_ref_mtime,
+        format_display_ref
+    )
+
+    # Filter out empty files/sessions and sort by true session mtime descending (newest first)
+    valid_sessions = [
+        f for f in discovered_files
+        if session_ref_exists(f) and session_ref_size(f) > 0
+    ]
     if not valid_sessions:
         valid_sessions = discovered_files
-    valid_sessions.sort(key=os.path.getmtime, reverse=True)
+    valid_sessions.sort(key=session_ref_mtime, reverse=True)
 
     target_path = None
     session = None
@@ -465,8 +477,8 @@ def run_auto_discover(args=None):
         show_share=getattr(args, "share", False)
     )
 
-    time_ago = format_time_ago(os.path.getmtime(target_path))
-    display_name = format_display_path(target_path)
+    time_ago = format_time_ago(session_ref_mtime(target_path))
+    display_name = format_display_ref(target_path)
 
     console.print(f"[dim]Audited most recent session: {display_name} (modified {time_ago}).[/dim]")
     if len(discovered_files) > 1:

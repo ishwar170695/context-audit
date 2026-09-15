@@ -172,3 +172,108 @@ def test_format_display_path_disambiguation():
     assert format_display_path(short_p) == "./logs/session.jsonl"
 
 
+def test_benchmark_weighted_vs_average_reuse():
+    """Regression test: average of session reuse ratios != total reused / total cumulative.
+
+    Session A: small session, high reuse (90%+)
+      - System prompt + tools repeated across 5 turns with identical user messages
+    Session B: large session, low reuse
+      - Many unique large messages → minimal repetition but far more tokens
+
+    If the benchmark incorrectly reports mean(reuse_ratios) as the only reuse metric,
+    it will show ~50% for two sessions at 90% and 10%.
+    But weighted = (reused_A + reused_B) / (cumulative_A + cumulative_B) which differs.
+    """
+    import json
+    import tempfile
+    import statistics as stats
+    from context_audit.parser import Session
+
+    # --- Session A: small, high reuse ---
+    session_a = Session()
+    session_a.system_instructions = "You are a helpful assistant. Follow all guidelines carefully."
+    session_a.tools = [{"name": "read_file", "description": "Reads a file from disk"}]
+    for i in range(5):
+        session_a.history.append({"role": "user", "content": "What is the status of the project?"})
+        session_a.history.append({"role": "model", "content": f"The project is on track. Turn {i+1}."})
+
+    # --- Session B: large tokens, low reuse ---
+    # Only 2 model turns but with very large unique content.
+    # With just 2 turns, the only "reuse" is the system prompt repeated in turn 2.
+    # This keeps reuse low while making total tokens much larger than Session A.
+    session_b = Session()
+    session_b.system_instructions = "Short."
+    session_b.tools = []
+    # Turn 1: huge unique user message + model response
+    session_b.history.append({"role": "user", "content": "Query: " + ("a" * 8000)})
+    session_b.history.append({"role": "model", "content": "Response: " + ("b" * 8000)})
+    # Turn 2: different huge user message + model response
+    session_b.history.append({"role": "user", "content": "Follow-up: " + ("c" * 8000)})
+    session_b.history.append({"role": "model", "content": "Answer: " + ("d" * 8000)})
+
+    result_a = analyze_session(session_a)
+    result_b = analyze_session(session_b)
+
+    # Verify per-session reuse ratios are very different
+    assert result_a.context_reuse_ratio > 50.0, \
+        f"Session A should have high reuse, got {result_a.context_reuse_ratio:.1f}%"
+    assert result_b.context_reuse_ratio < result_a.context_reuse_ratio, \
+        f"Session B reuse ({result_b.context_reuse_ratio:.1f}%) should be lower than A ({result_a.context_reuse_ratio:.1f}%)"
+
+    # Verify at the math level
+    reuse_ratios = [result_a.context_reuse_ratio, result_b.context_reuse_ratio]
+    reused_tokens = [result_a.math_breakdown['reused_tokens'], result_b.math_breakdown['reused_tokens']]
+    cumulative_tokens = [result_a.total_tokens_across_session, result_b.total_tokens_across_session]
+
+    average_reuse = stats.mean(reuse_ratios)
+    weighted_reuse = (sum(reused_tokens) / sum(cumulative_tokens) * 100) if sum(cumulative_tokens) > 0 else 0.0
+
+    # THE KEY ASSERTION: average and weighted should differ
+    assert abs(average_reuse - weighted_reuse) > 1.0, \
+        f"Average ({average_reuse:.1f}%) and weighted ({weighted_reuse:.1f}%) reuse should differ meaningfully"
+
+    # Weighted should be pulled toward the larger session's ratio
+    assert weighted_reuse < average_reuse, \
+        f"Weighted ({weighted_reuse:.1f}%) should be < average ({average_reuse:.1f}%) because larger session has lower reuse"
+
+    # --- Test via actual run_benchmark ---
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path_a = os.path.join(tmpdir, "session_a.json")
+        path_b = os.path.join(tmpdir, "session_b.json")
+        with open(path_a, 'w') as f:
+            json.dump({"system_instructions": session_a.system_instructions,
+                       "tools": session_a.tools, "history": session_a.history}, f)
+        with open(path_b, 'w') as f:
+            json.dump({"system_instructions": session_b.system_instructions,
+                       "tools": session_b.tools, "history": session_b.history}, f)
+
+        summary = run_benchmark(tmpdir)
+
+        assert summary.total_sessions == 2
+
+        # reused_tokens_list populated
+        assert len(summary.reused_tokens_list) == 2
+        assert all(isinstance(x, int) for x in summary.reused_tokens_list)
+
+        # waste_per_session populated
+        assert len(summary.waste_per_session) == 2
+
+        # worst_session identified by waste USD (not by tokens)
+        assert summary.worst_session is not None
+        max_waste = max(summary.waste_per_session)
+        assert abs(summary.worst_session['waste_usd'] - max_waste) < 0.001, \
+            f"Worst session waste ({summary.worst_session['waste_usd']}) should match max ({max_waste})"
+
+        # Histogram buckets sum to total sessions
+        low = sum(1 for w in summary.waste_per_session if w < 0.10)
+        med = sum(1 for w in summary.waste_per_session if 0.10 <= w < 1.00)
+        high = sum(1 for w in summary.waste_per_session if w >= 1.00)
+        assert low + med + high == summary.total_sessions
+
+        # Weighted reuse from benchmark data matches direct calculation
+        total_reused_bm = sum(summary.reused_tokens_list)
+        total_cum_bm = sum(summary.cumulative_tokens)
+        weighted_bm = (total_reused_bm / total_cum_bm * 100) if total_cum_bm > 0 else 0.0
+        avg_bm = stats.mean(summary.reuse_ratios)
+        assert abs(avg_bm - weighted_bm) > 1.0, \
+            f"Benchmark avg ({avg_bm:.1f}%) and weighted ({weighted_bm:.1f}%) should differ"

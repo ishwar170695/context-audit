@@ -204,8 +204,8 @@ class CodexDetector(AgentDetector):
 class CursorDetector(AgentDetector):
     name = "Cursor"
     format_name = "SQLite (state.vscdb)"
-    format_supported = False
-    support_note = "unsupported format (SQLite state.vscdb storage)"
+    format_supported = True
+    support_note = "Supported (Extracts Composer & Chat from state.vscdb)"
 
     def is_installed(self) -> bool:
         if shutil.which("cursor") is not None:
@@ -233,8 +233,17 @@ class CursorDetector(AgentDetector):
         return [p for p in paths if p and p.exists()]
 
     def find_sessions(self) -> List[str]:
-        # Cursor currently stores conversation history inside SQLite workspaceStorage vscdb files
-        return []
+        from context_audit.cursor_extractor import find_cursor_databases, extract_cursor_sessions
+        dbs = find_cursor_databases()
+        sessions = []
+        for db in dbs:
+            try:
+                extracted = extract_cursor_sessions(db)
+                for s in extracted:
+                    sessions.append(f"{db}#{s['id']}")
+            except Exception:
+                continue
+        return sessions
 
 class AiderDetector(AgentDetector):
     name = "Aider"
@@ -327,8 +336,9 @@ def run_discovery(detectors: Optional[List[AgentDetector]] = None, limit: Option
                 seen.add(s)
                 all_sessions.append(s)
 
-    # Sort all found sessions newest first
-    all_sessions.sort(key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True)
+    # Sort all found sessions newest first using true session timestamps
+    from context_audit.parser import session_ref_mtime
+    all_sessions.sort(key=session_ref_mtime, reverse=True)
 
     if limit is not None and limit > 0:
         all_sessions = all_sessions[:limit]

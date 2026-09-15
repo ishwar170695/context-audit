@@ -161,15 +161,151 @@ def parse_transcript_jsonl(file_path: str) -> Session:
         history=history
     )
 
-def load_session(file_path: str) -> Session:
+def split_session_ref(file_path: str) -> tuple:
+    """Splits Cursor sub-session refs of the form path/to/state.vscdb#composer_id.
+
+    Returns (filesystem_path, session_id). session_id is None when the path is a
+    real file or has no valid #suffix.
+    """
+    if not file_path:
+        return file_path, None
+    if os.path.exists(file_path):
+        return file_path, None
+    if "#" not in file_path:
+        return file_path, None
+    base_path, sub_id = file_path.rsplit("#", 1)
+    if sub_id and os.path.exists(base_path):
+        return base_path, sub_id
+    return file_path, None
+
+
+def session_fs_path(file_path: str) -> str:
+    """Filesystem path for exists/mtime/size checks, stripping a #session suffix."""
+    return split_session_ref(file_path)[0]
+
+
+def session_ref_exists(file_path: str) -> bool:
+    """Returns True if the referenced session file or database exists."""
+    fs_path, sub_id = split_session_ref(file_path)
+    if not os.path.exists(fs_path):
+        return False
+    if sub_id:
+        return True
+    return os.path.isfile(fs_path)
+
+
+def session_ref_mtime(file_path: str) -> float:
+    """Returns the true last-modified epoch timestamp for a session ref or file."""
+    fs_path, sub_id = split_session_ref(file_path)
+    if not os.path.exists(fs_path):
+        return 0.0
+
+    if sub_id or fs_path.lower().endswith(".vscdb"):
+        try:
+            from context_audit.cursor_extractor import get_cursor_session_meta
+            meta = get_cursor_session_meta(fs_path, sub_id)
+            if meta.get("mtime"):
+                return float(meta["mtime"])
+        except Exception:
+            pass
+
+    try:
+        return os.path.getmtime(fs_path)
+    except OSError:
+        return 0.0
+
+
+def session_ref_size(file_path: str, session: Optional[Session] = None) -> int:
+    """Returns the true byte payload size for a session ref or file."""
+    fs_path, sub_id = split_session_ref(file_path)
+    if session is not None and (sub_id or fs_path.lower().endswith(".vscdb")):
+        # Calculate real payload byte size for extracted SQLite session
+        history_bytes = sum(len(m.get("content", "").encode("utf-8")) for m in session.history)
+        sys_bytes = len(session.system_instructions.encode("utf-8")) if session.system_instructions else 0
+        return history_bytes + sys_bytes
+
+    if sub_id or fs_path.lower().endswith(".vscdb"):
+        try:
+            from context_audit.cursor_extractor import get_cursor_session_meta
+            meta = get_cursor_session_meta(fs_path, sub_id)
+            if meta.get("size"):
+                return int(meta["size"])
+        except Exception:
+            pass
+
+    try:
+        return os.path.getsize(fs_path) if os.path.exists(fs_path) else 0
+    except OSError:
+        return 0
+
+
+def format_display_ref(file_path: str, max_len: int = 55) -> str:
+    """Formats a session ref or file path for clean console display."""
+    from context_audit.reporter import format_display_path
+    fs_path, sub_id = split_session_ref(file_path)
+    base_display = format_display_path(fs_path, max_len=max_len)
+    if sub_id:
+        try:
+            from context_audit.cursor_extractor import get_cursor_session_meta
+            meta = get_cursor_session_meta(fs_path, sub_id)
+            title = meta.get("title")
+            if title and title != sub_id:
+                return f"{base_display} [{title}]"
+        except Exception:
+            pass
+        return f"{base_display} [session: {sub_id[:8]}]"
+    return base_display
+
+
+def expand_session_refs(file_paths: List[str]) -> List[str]:
+    """Expands bare state.vscdb paths into one ref per Composer/Chat session."""
+    from context_audit.cursor_extractor import extract_cursor_sessions
+
+    expanded: List[str] = []
+    for path in file_paths:
+        fs_path, session_id = split_session_ref(path)
+        if session_id:
+            expanded.append(path)
+            continue
+        if fs_path.lower().endswith(".vscdb") and os.path.isfile(fs_path):
+            try:
+                extracted = extract_cursor_sessions(fs_path)
+            except Exception:
+                extracted = []
+            if extracted:
+                for item in extracted:
+                    expanded.append(f"{fs_path}#{item['id']}")
+            continue
+        expanded.append(path)
+    return expanded
+
+
+def load_session(file_path: str, session_id: Optional[str] = None) -> Session:
     """Loads a session from a file, automatically detecting the format."""
+    fs_path, ref_session_id = split_session_ref(file_path)
+    file_path = fs_path
+    if session_id is None:
+        session_id = ref_session_id
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
         
     _, ext = os.path.splitext(file_path)
-    if ext.lower() == '.jsonl':
+    ext_lower = ext.lower()
+
+    if ext_lower == '.vscdb':
+        from context_audit.cursor_extractor import load_cursor_session
+        return load_cursor_session(file_path, session_id=session_id)
+
+    if ext_lower in ['.jsonl', '.json']:
+        pass
+    elif session_id or ext_lower in ['.sqlite', '.db']:
+        from context_audit.cursor_extractor import load_cursor_session
+        return load_cursor_session(file_path, session_id=session_id)
+
+    if ext_lower == '.jsonl':
         return parse_transcript_jsonl(file_path)
-    elif ext.lower() == '.json':
+    elif ext_lower == '.json':
         try:
             with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                 first_char = f.read(1).strip()
@@ -185,7 +321,7 @@ def load_session(file_path: str) -> Session:
             return parse_transcript_jsonl(file_path)
 
 def find_transcript_files(directory_path: str, max_depth: int = 5) -> List[str]:
-    """Finds all transcript.jsonl and similar session files recursively under directory_path with directory pruning and depth limits."""
+    """Finds all transcript.jsonl, session.json, and state.vscdb files recursively under directory_path with directory pruning and depth limits."""
     files = []
     if not os.path.isdir(directory_path):
         return files
@@ -209,6 +345,8 @@ def find_transcript_files(directory_path: str, max_depth: int = 5) -> List[str]:
             if fname_lower.endswith('.jsonl') or fname_lower == 'transcript.jsonl':
                 files.append(os.path.join(root, filename))
             elif fname_lower == 'session.json' or (fname_lower.endswith('.json') and 'session' in fname_lower):
+                files.append(os.path.join(root, filename))
+            elif fname_lower.endswith('.vscdb') or fname_lower == 'state.vscdb':
                 files.append(os.path.join(root, filename))
     return files
 

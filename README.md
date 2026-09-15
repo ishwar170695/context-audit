@@ -98,8 +98,8 @@ context-audit demo
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | **Antigravity** | ✓ | ✓ | ✓ | **✓ Supported** | Discovers `~/.gemini/antigravity-ide/brain` transcripts |
 | **Claude Code** | ✓ | ✓ | ✓ | **✓ Supported** | Discovers `~/.claude` transcripts and session logs |
+| **Cursor** | ✓ | ✓ | ✓ | **✓ Supported** | Extracts Composer & Chat from SQLite (`state.vscdb`) |
 | **Codex** | ✓ | ✓ | ✓ | **Experimental** | Scans `~/.codex` / `~/.openai` JSON/JSONL logs |
-| **Cursor** | ✓ | ✗ | ? | **✗ Unsupported format** | Cursor stores chat history in SQLite (`state.vscdb`) |
 | **Aider** | ✓ | ✗ | ✗ | **✗ Unsupported format** | Aider stores history as Markdown (`.aider.chat.history.md`) |
 | **Local Workspace** | ✓ | ✓ | ✓ | **✓ Supported** | Scans current directory for `.jsonl` / `session.json` |
 
@@ -116,8 +116,10 @@ context-audit
 # 2. "How am I doing overall?" (Aggregates all sessions discovered across your machine)
 context-audit benchmark
 
-# 3. "Audit this specific log file"
+# 3. "Audit this specific log file or database"
 context-audit run path/to/transcript.jsonl
+context-audit run path/to/state.vscdb                  # Audits Cursor Composer/Chat SQLite database
+context-audit run path/to/state.vscdb --session 0     # Audit specific Cursor session by index or ID
 ```
 
 ### Output Tiers & Scriptable Flags

@@ -110,18 +110,72 @@ def test_scenario_c_cursor():
             "LOCALAPPDATA": os.path.join(fake_home, "AppData", "Local"),
         }
         
-        # 1. Zero-config auto-discovery should detect Cursor and report unsupported format
+        # 1. Zero-config auto-discovery should detect Cursor
         res = run_cli_in_env([], env_vars, fake_cwd)
         assert res.returncode == 0
         assert "Cursor" in res.stdout
-        assert "unsupported format" in res.stdout
+        assert "0 candidates" in res.stdout
         assert "Traceback" not in res.stderr
 
-        # 2. Doctor should report Cursor with SQLite unsupported note
+        # 2. Doctor should report Cursor as SQLite-supported with no sessions yet
         res_doc = run_cli_in_env(["doctor"], env_vars, fake_cwd)
         assert res_doc.returncode == 0
         assert "Cursor" in res_doc.stdout
         assert "SQLite" in res_doc.stdout
+
+
+def test_scenario_c_cursor_with_vscdb():
+    """Zero-config should audit a Cursor Composer session from state.vscdb."""
+    with tempfile.TemporaryDirectory() as fake_home, tempfile.TemporaryDirectory() as fake_cwd:
+        global_dir = Path(fake_home) / ".cursor" / "User" / "globalStorage"
+        global_dir.mkdir(parents=True, exist_ok=True)
+        db_path = global_dir / "state.vscdb"
+
+        import json
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        c = conn.cursor()
+        c.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);")
+        meta = {
+            "composerId": "comp-iso",
+            "name": "Iso Cursor Session",
+            "createdAt": 1718000000000,
+            "conversation": [
+                {"type": 1, "text": "List the workspace files."},
+                {
+                    "type": 2,
+                    "text": "Listing files now.",
+                    "toolResults": [{"tool": "run_terminal", "result": "app.py\nmain.py"}],
+                },
+            ],
+        }
+        c.execute(
+            "INSERT INTO cursorDiskKV VALUES (?, ?);",
+            ("composerData:comp-iso", json.dumps(meta)),
+        )
+        conn.commit()
+        conn.close()
+
+        env_vars = {
+            "USERPROFILE": fake_home,
+            "HOME": fake_home,
+            "HOMEPATH": fake_home,
+            "APPDATA": os.path.join(fake_home, "AppData", "Roaming"),
+            "LOCALAPPDATA": os.path.join(fake_home, "AppData", "Local"),
+        }
+
+        res = run_cli_in_env([], env_vars, fake_cwd)
+        assert res.returncode == 0, f"Failed with stderr: {res.stderr}\nstdout: {res.stdout}"
+        assert "Discovered" in res.stdout
+        assert "agent session log" in res.stdout
+        assert "Traceback" not in res.stderr
+        assert "Audited most recent session:" in res.stdout
+
+        res_doc = run_cli_in_env(["doctor"], env_vars, fake_cwd)
+        assert res_doc.returncode == 0
+        assert "Cursor" in res_doc.stdout
+        assert "1 candidate(s)" in res_doc.stdout
+
 
 def test_scenario_d_aider():
     """Test D: Fresh machine where Aider is present."""

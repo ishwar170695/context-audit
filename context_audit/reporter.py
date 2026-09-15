@@ -1,4 +1,5 @@
 import json
+import os
 import statistics
 from typing import Any, Dict, List
 from rich import box
@@ -39,8 +40,15 @@ CLIPBOARD_ICON = safe_char("📋 ", "[*] ")
 
 def format_display_path(file_path: str, max_len: int = 55) -> str:
     """Formats a file path for clean, unambiguous console display without box overflow."""
-    if not file_path or file_path.startswith("Demo Sample") or "Sessions" in file_path:
+    if not file_path or file_path.startswith("Demo Sample") or file_path.endswith(" Sessions") or file_path.startswith("Auto-Discovered"):
         return file_path
+
+    sub_id = None
+    if "#" in file_path and not os.path.exists(file_path):
+        base_file, potential_sub = file_path.rsplit("#", 1)
+        if os.path.exists(base_file):
+            file_path = base_file
+            sub_id = potential_sub
 
     from pathlib import Path
     try:
@@ -58,6 +66,9 @@ def format_display_path(file_path: str, max_len: int = 55) -> str:
             display = p.as_posix()
     except Exception:
         display = str(file_path).replace("\\", "/")
+
+    if sub_id:
+        display = f"{display} [{sub_id}]"
 
     if len(display) <= max_len:
         return display
@@ -117,7 +128,11 @@ def print_instant_summary_card(
     wasted_usd: float,
     discount_pct: float = 90.0,
     total_tokens: int = 0,
-    show_share: bool = False
+    show_share: bool = False,
+    is_benchmark: bool = False,
+    avg_tokens: int = 0,
+    total_wasted_usd: float = 0.0,
+    session_count: int = 0
 ):
     """Prints the 10-second summary card and optional shareable copyable snippet."""
     console.print()
@@ -125,33 +140,57 @@ def print_instant_summary_card(
     card_elements = [
         ("  Target: ", "dim"), (f"{clean_target}\n", "bold white")
     ]
-    if total_tokens > 0:
+    if is_benchmark and total_tokens > 0:
+        card_elements.extend([
+            ("  Cumulative Benchmark Tokens: ", "dim"),
+            (f"{format_tokens(total_tokens)} tokens ", "bold white"),
+            (f"(avg {format_tokens(avg_tokens)} / session)\n\n", "dim")
+        ])
+    elif total_tokens > 0:
         card_elements.extend([
             ("  Cumulative Session Tokens: ", "dim"), (f"{format_tokens(total_tokens)} tokens\n\n", "bold white")
         ])
     else:
         card_elements.append(("\n", "white"))
         
-    card_elements.extend([
-        (f"  {repeated_pct:.0f}% ", "bold yellow" if repeated_pct > 30 else "bold white"),
-        (" repeated context (Context Reuse Ratio) ", "white"), ("-> Paid for 2x+ (identical file reads & tool history)\n", "dim"),
-        (f"  {overhead_pct:.0f}% ", "bold cyan"),
-        (" fixed overhead ", "white"), ("-> Tool schemas & system instructions before prompt\n", "dim"),
-        (f"  {cache_hit_pct:.0f}% ", "bold green"),
-        (" effective cache rate ", "white"), (f"-> Eligible for {discount_pct:.0f}% prefix cache discount\n\n", "dim"),
-        ("  Estimated wasted spend: ", "bold white"), (f"~{format_usd(wasted_usd)}\n", "bold red")
-    ])
+    if is_benchmark:
+        card_elements.extend([
+            (f"  {repeated_pct:.0f}% ", "bold yellow" if repeated_pct > 30 else "bold white"),
+            (" repeated context (avg per session) ", "white"), ("-> Paid for 2x+ (identical file reads & tool history)\n", "dim"),
+            (f"  {overhead_pct:.0f}% ", "bold cyan"),
+            (" fixed overhead (avg per session) ", "white"), ("-> Tool schemas & system instructions before prompt\n", "dim"),
+            (f"  {cache_hit_pct:.0f}% ", "bold green"),
+            (" effective cache rate (avg)\n\n", "white"),
+            ("  Estimated wasted spend: ", "bold white"),
+            (f"~{format_usd(wasted_usd)} / session avg  ", "bold red"),
+            (f"(Total: ~{format_usd(total_wasted_usd)} across {session_count} sessions)\n", "dim red")
+        ])
+    else:
+        card_elements.extend([
+            (f"  {repeated_pct:.0f}% ", "bold yellow" if repeated_pct > 30 else "bold white"),
+            (" repeated context (Context Reuse Ratio) ", "white"), ("-> Paid for 2x+ (identical file reads & tool history)\n", "dim"),
+            (f"  {overhead_pct:.0f}% ", "bold cyan"),
+            (" fixed overhead ", "white"), ("-> Tool schemas & system instructions before prompt\n", "dim"),
+            (f"  {cache_hit_pct:.0f}% ", "bold green"),
+            (" effective cache rate\n\n", "white"),
+            ("  Estimated wasted spend: ", "bold white"), (f"~{format_usd(wasted_usd)}\n", "bold red")
+        ])
+
     card_text = Text.assemble(*card_elements)
     from rich.rule import Rule
     rule_char = safe_char("─", "-")
-    console.print(Rule("[bold green]context-audit summary[/bold green]", style="green", align="left", characters=rule_char))
+    title_str = "[bold green]context-audit benchmark summary[/bold green]" if is_benchmark else "[bold green]context-audit summary[/bold green]"
+    console.print(Rule(title_str, style="green", align="left", characters=rule_char))
     console.print()
     console.print(card_text)
     console.print(Rule(style="dim green", characters=rule_char))
     console.print()
     
     if show_share:
-        shareable_str = f"{CLIPBOARD_ICON}My context-audit: {repeated_pct:.0f}% repeated context | {cache_hit_pct:.0f}% cache hit rate | ~{format_usd(wasted_usd)} wasted. Run yours: pip install context-audit && context-audit"
+        if is_benchmark:
+            shareable_str = f"{CLIPBOARD_ICON}My context-audit benchmark: {repeated_pct:.0f}% avg repeated context | ~{format_usd(wasted_usd)}/session wasted (~{format_usd(total_wasted_usd)} total across {session_count} sessions). Run yours: pip install context-audit && context-audit"
+        else:
+            shareable_str = f"{CLIPBOARD_ICON}My context-audit: {repeated_pct:.0f}% repeated context | {cache_hit_pct:.0f}% cache hit rate | ~{format_usd(wasted_usd)} wasted. Run yours: pip install context-audit && context-audit"
         console.print(f"[dim]{shareable_str}[/dim]\n")
     else:
         console.print()
@@ -648,6 +687,13 @@ def print_benchmark_report(
     show_full: bool = False,
     show_share: bool = False
 ):
+    import sys
+    try:
+        "█".encode(sys.stdout.encoding or "utf-8")
+        BLOCK_CHAR = "█"
+    except Exception:
+        BLOCK_CHAR = "#"
+
     if summary.total_sessions == 0:
         console.print(Panel("[bold red]Error: No session logs found in the target directory.[/bold red]", title="Benchmark Summary", box=box.ASCII))
         return
@@ -655,6 +701,7 @@ def print_benchmark_report(
     avg_cum = statistics.mean(summary.cumulative_tokens)
     med_cum = statistics.median(summary.cumulative_tokens)
     max_cum = max(summary.cumulative_tokens)
+    total_cum = sum(summary.cumulative_tokens)
     
     avg_peak = statistics.mean(summary.peak_context_sizes)
     med_peak = statistics.median(summary.peak_context_sizes)
@@ -666,6 +713,11 @@ def print_benchmark_report(
     avg_reuse = statistics.mean(summary.reuse_ratios)
     med_reuse = statistics.median(summary.reuse_ratios)
     
+    # Weighted reuse: Σ reused_tokens / Σ cumulative_tokens
+    # This is different from average of per-session ratios
+    total_reused = sum(summary.reused_tokens_list) if summary.reused_tokens_list else 0
+    weighted_reuse = (total_reused / total_cum * 100) if total_cum > 0 else 0.0
+    
     # Financial sums/averages
     avg_standard_cost = statistics.mean(summary.standard_costs)
     med_standard_cost = statistics.median(summary.standard_costs)
@@ -673,31 +725,147 @@ def print_benchmark_report(
     
     avg_cached_cost = statistics.mean(summary.cached_costs)
     med_cached_cost = statistics.median(summary.cached_costs)
+    total_cached_cost = sum(summary.cached_costs)
     
     avg_savings = statistics.mean(summary.savings_list)
+    med_savings = statistics.median(summary.savings_list)
     total_savings = sum(summary.savings_list)
     avg_savings_pct = (avg_savings / avg_standard_cost * 100) if avg_standard_cost > 0 else 0
     
-    total_repeated_spend = sum(b.get("total_repeated_cost_usd", 0.0) for b in summary.repeated_blocks)
-    if total_repeated_spend == 0.0:
-        total_repeated_spend = total_savings
+    # Per-session waste (already computed in analyzer, use directly)
+    total_waste = sum(summary.waste_per_session) if summary.waste_per_session else 0.0
+    avg_waste = statistics.mean(summary.waste_per_session) if summary.waste_per_session else 0.0
+    med_waste = statistics.median(summary.waste_per_session) if summary.waste_per_session else 0.0
 
     avg_overhead = statistics.mean(summary.overhead_pcts) if summary.overhead_pcts else 0.0
+    med_overhead = statistics.median(summary.overhead_pcts) if summary.overhead_pcts else 0.0
 
     # 0. Print instant 10-second summary card for benchmark
     print_instant_summary_card(
-        target_label=f"{summary.total_sessions} Sessions",
+        target_label=directory_path if directory_path else f"{summary.total_sessions} Sessions",
         repeated_pct=avg_reuse,
         overhead_pct=avg_overhead,
         cache_hit_pct=avg_savings_pct if avg_savings_pct > 0 else 61.0,
-        wasted_usd=total_repeated_spend
+        wasted_usd=avg_waste,
+        total_tokens=int(total_cum),
+        avg_tokens=int(avg_cum),
+        is_benchmark=True,
+        total_wasted_usd=total_waste,
+        session_count=summary.total_sessions,
+        show_share=show_share
     )
+
+    # 1. Benchmark Overview Table (Always shown for high-signal clarity)
+    summary_table = Table(
+        title=f"Benchmark Overview: {summary.total_sessions} Sessions",
+        show_header=True,
+        header_style="bold cyan",
+        box=box.ASCII,
+        expand=True
+    )
+    summary_table.add_column("Metric", style="bold white", width=28)
+    summary_table.add_column("Avg / Session", justify="right")
+    summary_table.add_column("Median", justify="right")
+    summary_table.add_column("Total / Weighted", justify="right", style="bold")
+
+    summary_table.add_row(
+        "Cumulative Tokens",
+        format_tokens(int(avg_cum)),
+        format_tokens(int(med_cum)),
+        f"{format_tokens(int(total_cum))} total",
+    )
+    summary_table.add_row(
+        "Peak Context Window",
+        format_tokens(int(avg_peak)),
+        format_tokens(int(med_peak)),
+        f"{format_tokens(max_peak)} max",
+    )
+    summary_table.add_row(
+        "Context Reuse Ratio",
+        f"{avg_reuse:.1f}%",
+        f"{med_reuse:.1f}%",
+        f"{weighted_reuse:.1f}% weighted",
+    )
+    summary_table.add_row(
+        "Fixed Overhead",
+        f"{avg_overhead:.1f}%",
+        f"{med_overhead:.1f}%",
+        "-",
+    )
+    summary_table.add_row(
+        "Standard Cost (No Cache)",
+        format_usd(avg_standard_cost),
+        format_usd(med_standard_cost),
+        f"{format_usd(total_standard_cost)} total",
+    )
+    summary_table.add_row(
+        "Cached Cost",
+        format_usd(avg_cached_cost),
+        format_usd(med_cached_cost),
+        f"{format_usd(total_cached_cost)} total",
+    )
+    summary_table.add_row(
+        "Potential Cache Savings",
+        format_usd(avg_savings),
+        format_usd(med_savings),
+        f"{format_usd(total_savings)} ({avg_savings_pct:.1f}%)",
+    )
+    summary_table.add_row(
+        "Estimated Wasted Spend",
+        format_usd(avg_waste),
+        format_usd(med_waste),
+        f"{format_usd(total_waste)} total",
+    )
+    console.print(summary_table)
+
+    # 2. Session Waste Distribution Histogram + Worst Session Callout
+    if summary.waste_per_session:
+        console.print()
+        low_threshold = 0.10
+        high_threshold = 1.00
+        low_count = sum(1 for w in summary.waste_per_session if w < low_threshold)
+        med_count = sum(1 for w in summary.waste_per_session if low_threshold <= w < high_threshold)
+        high_count = sum(1 for w in summary.waste_per_session if w >= high_threshold)
+
+        max_count = max(low_count, med_count, high_count, 1)
+        max_bar = 30
+
+        def make_bar(count: int) -> str:
+            bar_len = max(0, int(round(count / max_count * max_bar)))
+            return BLOCK_CHAR * bar_len
+
+        dist_text = Text()
+        dist_text.append(f"  SESSION WASTE DISTRIBUTION ({summary.total_sessions} sessions)\n\n", style="bold cyan")
+        dist_text.append(f"  Low (<{format_usd(low_threshold)})".ljust(26), style="white")
+        dist_text.append(make_bar(low_count), style="green")
+        dist_text.append(f"  {low_count}\n", style="bold white")
+        dist_text.append(f"  Medium ({format_usd(low_threshold)}-{format_usd(high_threshold)})".ljust(26), style="white")
+        dist_text.append(make_bar(med_count), style="yellow")
+        dist_text.append(f"  {med_count}\n", style="bold white")
+        dist_text.append(f"  High (>{format_usd(high_threshold)})".ljust(26), style="white")
+        dist_text.append(make_bar(high_count), style="red")
+        dist_text.append(f"  {high_count}\n", style="bold white")
+
+        # Verify counts sum to total sessions
+        assert low_count + med_count + high_count == summary.total_sessions, \
+            f"Histogram buckets ({low_count}+{med_count}+{high_count}) != total sessions ({summary.total_sessions})"
+
+        if summary.worst_session:
+            ws = summary.worst_session
+            dist_text.append(f"\n  Worst session: ", style="dim")
+            dist_text.append(
+                f"{format_tokens(ws['tokens'])} tokens · {ws['reuse_pct']:.0f}% reused · ~{format_usd(ws['waste_usd'])} waste\n",
+                style="bold red"
+            )
+
+        console.print(dist_text)
+    console.print()
 
     if show_share:
         console.print(Panel(
             f"[bold cyan]Shareable Context Economics Summary:[/bold cyan]\n"
             f"\"Audited my AI agent sessions with context-audit: {avg_reuse:.0f}% repeated context, "
-            f"{format_usd(total_repeated_spend)} wasted spend across {summary.total_sessions} sessions. "
+            f"~{format_usd(avg_waste)}/session wasted spend ({format_usd(total_waste)} total across {summary.total_sessions} sessions). "
             f"Prefix caching saved {format_usd(total_savings)}.\"",
             box=box.ROUNDED
         ))
@@ -709,16 +877,17 @@ def print_benchmark_report(
                     ("CROSS-SESSION BENCHMARK SUMMARY\n", "bold violet"),
                     (f"Target: {directory_path}\n\n", "italic gray"),
                     (f"Sessions Analyzed: {summary.total_sessions}\n\n", "bold white"),
-                    (f"Cumulative Session Tokens:\n  Avg: {format_tokens(int(avg_cum))} | Median: {format_tokens(int(med_cum))} | Max: {format_tokens(max_cum)}\n", "white"),
+                    (f"Cumulative Session Tokens:\n  Avg: {format_tokens(int(avg_cum))} | Median: {format_tokens(int(med_cum))} | Max: {format_tokens(max_cum)} | Total: {format_tokens(int(total_cum))}\n", "white"),
                     (f"Peak Context Size:\n  Avg: {format_tokens(int(avg_peak))} | Median: {format_tokens(int(med_peak))} | Max: {format_tokens(max_peak)}\n", "white"),
                     (f"Final Context Size:\n  Avg: {format_tokens(int(avg_final))} | Median: {format_tokens(int(med_final))}\n", "white"),
-                    (f"Context Reuse Ratio:\n  Avg: {avg_reuse:.1f}% | Median: {med_reuse:.1f}%\n", "bold yellow" if avg_reuse > 50 else "white"),
+                    (f"Context Reuse Ratio:\n  Avg: {avg_reuse:.1f}% | Median: {med_reuse:.1f}% | Weighted: {weighted_reuse:.1f}%\n", "bold yellow" if avg_reuse > 50 else "white"),
                     (f"Average Novel Context Ratio: {100 - avg_reuse:.1f}%\n\n", "bold green" if (100 - avg_reuse) > 20 else "white"),
                     ("Financial Cost Aggregations (USD):\n", "bold cyan"),
                     (f"  Total Standard Spend: {format_usd(total_standard_cost)}\n", "white"),
                     (f"  Avg Session Cost (No Cache): {format_usd(avg_standard_cost)} | Median: {format_usd(med_standard_cost)}\n", "white"),
                     (f"  Avg Session Cost (With Cache): {format_usd(avg_cached_cost)} | Median: {format_usd(med_cached_cost)}\n", "bold green"),
-                    (f"  Total Potential Cache Savings: {format_usd(total_savings)} (Avg: {format_usd(avg_savings)} / session, {avg_savings_pct:.1f}%)\n", "green")
+                    (f"  Total Potential Cache Savings: {format_usd(total_savings)} (Avg: {format_usd(avg_savings)} / session, {avg_savings_pct:.1f}%)\n", "green"),
+                    (f"  Total Estimated Wasted Spend: {format_usd(total_waste)} (Avg: {format_usd(avg_waste)} / session)\n", "bold red")
                 )
             ),
             title="[bold green]context-audit benchmark[/bold green]",
@@ -726,7 +895,7 @@ def print_benchmark_report(
             box=box.ASCII
         ))
     
-    # 1. Top Repeated Artifacts Across All Sessions
+    # 3. Top Repeated Artifacts Across All Sessions
     if show_wasters or show_full:
         console.print("\n[bold orange3]Top Repeated Artifacts Across All Sessions[/bold orange3]")
         artifact_table = Table(show_header=True, header_style="bold orange3", expand=True, box=box.ASCII)
@@ -753,7 +922,7 @@ def print_benchmark_report(
             artifact_table.add_row("No repeated blocks found", "-", "0", "0", "$0.00")
         console.print(artifact_table)
     
-    # 2. Context Size Scaling Analysis
+    # 4. Context Size Scaling Analysis
     if show_scaling or show_full:
         console.print("\n[bold cyan]Context Size Scaling Analysis[/bold cyan]")
         console.print("[dim]Does reuse scale linearly, or do larger sessions become exponentially more repetitive?[/dim]")

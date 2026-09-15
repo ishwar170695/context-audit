@@ -14,7 +14,7 @@ try:
     def get_token_count(text: str) -> int:
         if not text:
             return 0
-        return len(_ENCODER.encode(text))
+        return len(_ENCODER.encode(text, disallowed_special=()))
     HAS_TIKTOKEN = True
 except ImportError:
     def get_token_count(text: str) -> int:
@@ -597,6 +597,7 @@ class BenchmarkSummary:
         self.peak_context_sizes = []
         self.final_context_sizes = []
         self.reuse_ratios = []
+        self.reused_tokens_list = []  # Per-session reused token counts for weighted reuse
         self.turn_counts = []
         self.file_sizes = []
         
@@ -604,8 +605,12 @@ class BenchmarkSummary:
         self.cached_costs = []
         self.savings_list = []
         self.overhead_pcts = []
+        self.waste_per_session = []  # Per-session estimated waste USD
         
         self.repeated_blocks = []
+        
+        # Worst session by estimated waste (not by token count)
+        self.worst_session = None  # Dict: {file, tokens, reuse_pct, waste_usd}
         
         self.buckets = {
             "< 5k tokens": {"count": 0, "reuse_ratios": [], "peak_sizes": [], "cumulative_tokens": [], "savings": []},
@@ -619,18 +624,28 @@ def run_benchmark(
     input_price: float = 3.00, 
     cache_price: float = 0.30
 ) -> BenchmarkSummary:
-    from context_audit.parser import find_transcript_files, load_session
+    from context_audit.parser import (
+        expand_session_refs,
+        find_transcript_files,
+        load_session,
+        session_fs_path,
+        split_session_ref,
+        session_ref_size,
+    )
     
     summary = BenchmarkSummary()
     if isinstance(target, (list, tuple, set)):
         files = list(target)
     elif isinstance(target, str):
-        if os.path.isfile(target):
+        fs_target, _ = split_session_ref(target)
+        if os.path.isfile(fs_target):
             files = [target]
         else:
             files = find_transcript_files(target)
     else:
         files = []
+
+    files = expand_session_refs(files)
     
     if not files:
         return summary
@@ -647,15 +662,32 @@ def run_benchmark(
             summary.peak_context_sizes.append(result.peak_context_size)
             summary.final_context_sizes.append(result.final_context_size)
             summary.reuse_ratios.append(result.context_reuse_ratio)
+            summary.reused_tokens_list.append(result.math_breakdown.get('reused_tokens', 0))
             summary.turn_counts.append(len(result.timeline))
-            summary.file_sizes.append(os.path.getsize(f_path))
+            summary.file_sizes.append(session_ref_size(f_path, session))
             
             summary.standard_costs.append(result.standard_input_cost)
             summary.cached_costs.append(result.cached_input_cost)
             summary.savings_list.append(result.potential_cache_savings)
             
+            # Per-session waste: use repeated block cost, fallback to cache savings
+            session_waste = sum(b.get("repeated_cost_usd", 0.0) for b in result.repeated_blocks)
+            if session_waste == 0.0:
+                session_waste = result.potential_cache_savings
+            summary.waste_per_session.append(session_waste)
+            
+            # Track worst session by waste USD (not by tokens)
+            if summary.worst_session is None or session_waste > summary.worst_session['waste_usd']:
+                summary.worst_session = {
+                    'file': f_path,
+                    'tokens': result.total_tokens_across_session,
+                    'reuse_pct': result.context_reuse_ratio,
+                    'waste_usd': session_waste
+                }
+            
+            tot = result.total_tokens_across_session
             overhead_tok = result.category_breakdown.get("System Prompt", 0) + result.category_breakdown.get("Tool Schemas", 0)
-            overhead_pct = (overhead_tok / result.final_context_size * 100) if result.final_context_size > 0 else 0.0
+            overhead_pct = min(100.0, (overhead_tok / tot * 100)) if tot > 0 else 0.0
             summary.overhead_pcts.append(overhead_pct)
             
             final_size = result.final_context_size

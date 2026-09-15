@@ -37,12 +37,11 @@ def test_workspace_detector():
     assert inspect_data["name"] == "Local Workspace"
     assert inspect_data["installed"] is True
 
-def test_cursor_and_aider_unsupported_status():
+def test_cursor_supported_and_aider_unsupported_status():
     cursor_det = CursorDetector()
     assert cursor_det.name == "Cursor"
-    assert cursor_det.format_supported is False
-    assert "SQLite" in cursor_det.support_note
-    assert cursor_det.find_sessions() == []
+    assert cursor_det.format_supported is True
+    assert "SQLite" in cursor_det.format_name
 
     aider_det = AiderDetector()
     assert aider_det.name == "Aider"

@@ -116,3 +116,13 @@ research/entropy_output/
 session_report*.txt
 temp_*
 research/*baseline*.md
+
+# Local Cursor/VS Code state dumps (may contain private chat)
+*.vscdb
+
+# Downloaded trace data (may be large)
+downloads/
+
+# Cursor extractor probe outputs
+cursor_probe_*.txt
+cursor_sessions_*.json

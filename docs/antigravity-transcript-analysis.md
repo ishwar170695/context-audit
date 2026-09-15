@@ -94,8 +94,21 @@ context-audit benchmark
 
 ---
 
-## 4. Summary: Antigravity + context-audit
+## 4. Relationship to Other Antigravity Tools (`agy-reader`, `agentsview`)
+
+The Antigravity open-source ecosystem includes a few complementary utilities:
+
+| Tool | Focus | Role |
+| :--- | :--- | :--- |
+| **`agy-reader`** | Transcript Extraction & Decryption | Communicates with the background daemon to decrypt `.pb` session files into `.trajectory.json` sidecars and Markdown. |
+| **`agentsview`** | Web Visualization | Provides a local web interface to browse through parsed agent sessions and trajectories. |
+| **`context-audit`** | Context Economics & Token Auditing | Forensic analysis of multi-turn transcripts (`transcript.jsonl`): measures context reuse ratio, prompt caching savings, and duplicate file waste. |
+
+---
+
+## 5. Summary: Antigravity + context-audit
 
 * **Privacy**: 100% local analysis. Transcripts are never uploaded or transmitted over the network.
 * **Economics**: Accurately measures dynamic prefix caching savings versus un-cached standard API rates.
 * **Diagnostics**: Identifies when large terminal outputs or file views cause context pressure and attention degradation.
+

@@ -1,6 +1,10 @@
 # context-audit
 
-> **85–99% of your coding agent bill is invisible input tokens. Inspect your context economics in 5 seconds.**
+[![PyPI version](https://img.shields.io/pypi/v/context-audit.svg)](https://pypi.org/project/context-audit/)
+[![Python versions](https://img.shields.io/pypi/pyversions/context-audit.svg)](https://pypi.org/project/context-audit/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> **`context-audit` is an open-source local CLI for analyzing Claude Code and coding-agent session transcripts to measure context reuse, context growth, cumulative token usage, and estimated input cost.**
 
 ```text
 context-audit summary ─────────────────────────────────────────────────────────
@@ -22,11 +26,41 @@ Tip: Run with --wasters for duplicate files, --composition for visual map, or --
 
 ## 💡 What Problem Does This Solve?
 
-When you use AI coding agents (Claude Code, Cursor, Antigravity, or custom agent loops), you aren't paying for what you type. You are paying for the compounding weight of **raw terminal command outputs, repeated file reads, and tool declarations re-sent on every single turn**.
+When you use AI coding agents (Claude Code, Antigravity, or custom agent loops), you aren't paying for what you type. You are paying for the compounding weight of **raw terminal command outputs, repeated file reads, and tool declarations re-sent on every single turn**.
 
 In long sessions, 85% to 99% of the tokens billed by API providers are identical repetitions of earlier turns.
 
 `context-audit` is a **zero-config, 100% local CLI** that parses your local agent transcripts, calculates context reuse, models dynamic prefix caching savings, and pinpoints preventable waste.
+
+---
+
+## 🚫 What context-audit is NOT
+
+To be completely clear about its scope:
+
+* **It is not a replacement for Claude Code's `/cost` or `/context`.**
+* **It is not a real-time token dashboard.**
+* **It is not an AI gateway, proxy, or network interceptor.**
+* **It does not send session transcripts to a remote server.** Everything runs 100% locally and offline.
+* **It is not a CLAUDE.md configuration auditor.**
+* **It is not `ccusage`.**
+
+---
+
+## ⚖️ How context-audit Compares to ccusage
+
+Both tools help developers understand AI coding agent usage, but they address completely different questions:
+
+| Dimension | `ccusage` | `context-audit` |
+| :--- | :--- | :--- |
+| **Core Question** | *"How many tokens did I use?"* | *"What happened to my context?"* |
+| **Primary Mode** | Live tracking & rate-limit monitoring | Historical transcript forensics & waste diagnostics |
+| **Key Metrics** | Daily/weekly spend, 5-hour billing windows | Context reuse ratio, prefix cache savings, repeated file reads |
+| **Integration** | Terminal statusline, background daemon | Post-session audit CLI, multi-session benchmarks (`--benchmark`) |
+| **Target Data** | API usage metadata | Complete local transcripts (`~/.claude/projects/...`) |
+| **Best Used For** | Knowing when you'll hit Anthropic rate limits | Understanding why your sessions are expensive and what context is repeated |
+
+*(Both tools complement each other: use `ccusage` in your terminal statusline during active coding, and run `context-audit` to inspect transcript economics).*
 
 ---
 

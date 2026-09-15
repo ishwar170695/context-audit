@@ -115,3 +115,4 @@ entropy_output/
 research/entropy_output/
 session_report*.txt
 temp_*
+research/*baseline*.md

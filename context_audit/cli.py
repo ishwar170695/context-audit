@@ -685,14 +685,44 @@ def run_receipt_flow(args=None):
 
     # Launch in Browser
     if not getattr(args, "no_open", False):
-        receipt_template_path = Path(__file__).resolve().parent.parent / "receipt.html"
-        if not receipt_template_path.exists():
-            receipt_template_path = Path("receipt.html")
+        candidates = [
+            Path(__file__).resolve().parent / "receipt_template.html",
+            Path(__file__).resolve().parent.parent / "receipt.html",
+            Path("receipt.html"),
+        ]
+        template_text = None
+        for c in candidates:
+            if c.exists():
+                try:
+                    template_text = c.read_text(encoding="utf-8")
+                    break
+                except Exception:
+                    continue
 
-        if receipt_template_path.exists():
-            encoded_data = urllib.parse.quote(json.dumps(receipt_data))
-            file_url = f"{receipt_template_path.resolve().as_uri()}#{encoded_data}"
-            console.print(f"[bold green]Opening interactive receipt in browser...[/bold green]")
+        if template_text:
+            audit_json_str = json.dumps(receipt_data, indent=2)
+            if "window.AUDIT_DATA = null;" in template_text:
+                injected_html = template_text.replace(
+                    "window.AUDIT_DATA = null;",
+                    f"window.AUDIT_DATA = {audit_json_str};"
+                )
+            else:
+                injected_html = template_text.replace(
+                    "<script>",
+                    f"<script>\nwindow.AUDIT_DATA = {audit_json_str};\n",
+                    1
+                )
+
+            out_file = Path.cwd() / "context_audit_receipt.html"
+            try:
+                out_file.write_text(injected_html, encoding="utf-8")
+            except Exception:
+                import tempfile
+                out_file = Path(tempfile.gettempdir()) / "context_audit_receipt.html"
+                out_file.write_text(injected_html, encoding="utf-8")
+
+            file_url = out_file.resolve().as_uri()
+            console.print(f"[bold green]Opening interactive receipt in browser ({out_file.name})...[/bold green]")
             try:
                 webbrowser.open(file_url)
             except Exception:

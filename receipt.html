@@ -796,7 +796,7 @@ const PRESETS = {
 const COMMANDS = {
   pipx: "pipx run context-audit receipt",
   uvx: "uvx context-audit receipt",
-  pip: "pip install context-audit && context-audit receipt"
+  pip: "pip install -U context-audit; context-audit receipt"
 };
 
 function switchCmd(type) {

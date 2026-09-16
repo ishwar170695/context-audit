@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-audit"
-version = "0.1.5"
+version = "0.1.6"
 description = "A local CLI for analyzing Claude Code, Antigravity, and coding-agent session transcripts to measure context reuse, context growth, cumulative token usage, and estimated input cost."
 readme = "README.md"
 requires-python = ">=3.8"

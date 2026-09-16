@@ -40,7 +40,7 @@ def main():
         return
 
     # If first argument is a file or dir that exists and not a recognized command, default to 'run <file>' or 'benchmark <dir>'
-    recognized_commands = ["run", "benchmark", "doctor", "demo", "-h", "--help", "-v", "--version"]
+    recognized_commands = ["run", "benchmark", "doctor", "demo", "receipt", "-h", "--help", "-v", "--version"]
     if len(sys.argv) == 2 and sys.argv[1] not in recognized_commands:
         if os.path.isfile(sys.argv[1]) or os.path.isfile(session_fs_path(sys.argv[1])):
             sys.argv.insert(1, "run")
@@ -120,6 +120,26 @@ def main():
     demo_parser.add_argument("--markdown", action="store_true", help="Output audit results as Markdown.")
     demo_parser.add_argument("--share", action="store_true", help="Print shareable one-line quote.")
 
+    # receipt command
+    receipt_parser = subparsers.add_parser(
+        "receipt", help="Detect local agents, select a session, and generate an instant browser receipt."
+    )
+    receipt_parser.add_argument(
+        "--agent", type=str, default=None, help="Filter by agent name (claude, cursor, antigravity, etc.)."
+    )
+    receipt_parser.add_argument(
+        "--latest", action="store_true", help="Audit the newest session immediately without prompting."
+    )
+    receipt_parser.add_argument(
+        "--no-open", action="store_true", help="Do not open the receipt in a browser."
+    )
+    receipt_parser.add_argument(
+        "--input-price", type=float, default=3.00, help="LLM input price per million. Default: 3.00."
+    )
+    receipt_parser.add_argument(
+        "--cache-price", type=float, default=0.30, help="LLM cache price per million. Default: 0.30."
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -130,6 +150,8 @@ def main():
         run_doctor()
     elif args.command == "demo":
         run_demo(args)
+    elif args.command == "receipt":
+        run_receipt_flow(args)
     elif args.command == "run":
         try:
             # 1. Parse log
@@ -484,6 +506,199 @@ def run_auto_discover(args=None):
     if len(discovered_files) > 1:
         console.print(f"[dim]Found {len(discovered_files) - 1} other local sessions. To aggregate all sessions, run: [bold cyan]context-audit benchmark[/bold cyan][/dim]")
     console.print()
+
+def run_receipt_flow(args=None):
+    """Interactive zero-friction agent session detection and instant browser receipt generation."""
+    import json
+    import urllib.parse
+    import webbrowser
+    from context_audit.detectors import run_discovery
+    from context_audit.parser import (
+        load_session,
+        session_ref_mtime,
+        session_ref_size,
+        session_ref_exists,
+        format_display_ref
+    )
+    from context_audit.analyzer import analyze_session
+    from context_audit.reporter import format_tokens
+
+    console.print("\n[bold cyan]Scanning for installed coding agents & local session storage...[/bold cyan]")
+    report = run_discovery(limit=250)
+
+    # Collect sessions grouped by agent
+    agent_sessions = {}
+    for item in report.agent_reports:
+        name = item["name"]
+        sessions = [
+            s for s in item.get("sessions", [])
+            if session_ref_exists(s) and session_ref_size(s) > 0
+        ]
+        if sessions:
+            agent_sessions[name] = sessions
+
+    if not agent_sessions:
+        console.print("\n[bold yellow]No auditable agent sessions discovered locally.[/bold yellow]\n")
+        console.print("[bold]Searched locations:[/bold]")
+        console.print("  • ~/.claude / projects           (Claude Code)")
+        console.print("  • Cursor global/workspace SQLite (Cursor state.vscdb)")
+        console.print("  • ~/.gemini/antigravity-ide      (Antigravity IDE)")
+        console.print("  • ./                             (Local Workspace)\n")
+        console.print("Run [bold green]context-audit demo[/bold green] to test on realistic sample data, or open [bold green]receipt.html[/bold green] in your browser.\n")
+        return
+
+    # 1. Agent Selection
+    filter_agent = getattr(args, "agent", None) if args else None
+    if filter_agent:
+        matched = [k for k in agent_sessions if filter_agent.lower() in k.lower()]
+        if matched:
+            selected_agent = matched[0]
+        else:
+            console.print(f"[bold red]Unknown agent '{filter_agent}'. Detected agents: {', '.join(agent_sessions.keys())}[/bold red]")
+            return
+    elif getattr(args, "latest", False) or len(agent_sessions) == 1:
+        selected_agent = list(agent_sessions.keys())[0]
+        console.print(f"Found [bold green]{selected_agent}[/bold green] ({len(agent_sessions[selected_agent])} session(s)).")
+    else:
+        console.print("\n[bold]Found agents with sessions:[/bold]\n")
+        agent_names = list(agent_sessions.keys())
+        for idx, name in enumerate(agent_names, 1):
+            sess_count = len(agent_sessions[name])
+            console.print(f"  [{idx}] [bold]{name:<16}[/bold] ({sess_count} session{'s' if sess_count != 1 else ''})")
+        
+        console.print()
+        try:
+            choice = input(f"Select agent [1-{len(agent_names)}] (default 1): ").strip()
+            if not choice:
+                selected_agent = agent_names[0]
+            else:
+                idx = int(choice) - 1
+                selected_agent = agent_names[idx] if 0 <= idx < len(agent_names) else agent_names[0]
+        except (ValueError, IndexError):
+            selected_agent = agent_names[0]
+
+    sessions = agent_sessions[selected_agent]
+    sessions.sort(key=session_ref_mtime, reverse=True)
+
+    # 2. Session Selection
+    if getattr(args, "latest", False) or len(sessions) == 1:
+        target_session = sessions[0]
+    else:
+        console.print(f"\n[bold]Recent sessions for {selected_agent}:[/bold]\n")
+        display_limit = min(8, len(sessions))
+        for idx in range(display_limit):
+            s_ref = sessions[idx]
+            time_str = format_time_ago(session_ref_mtime(s_ref))
+            disp_title = format_display_ref(s_ref, max_len=50)
+            console.print(f"  [{idx + 1}] {time_str:<8}  {disp_title}")
+        
+        console.print()
+        try:
+            choice = input(f"Select session [1-{display_limit}] (default 1): ").strip()
+            if not choice:
+                target_session = sessions[0]
+            else:
+                idx = int(choice) - 1
+                target_session = sessions[idx] if 0 <= idx < display_limit else sessions[0]
+        except (ValueError, IndexError):
+            target_session = sessions[0]
+
+    console.print(f"\n[cyan]Auditing session...[/cyan]")
+    try:
+        session_obj = load_session(target_session)
+    except Exception as e:
+        console.print(f"[bold red]Failed to load session:[/bold red] {e}")
+        return
+
+    input_price = getattr(args, "input_price", 3.00) if args else 3.00
+    cache_price = getattr(args, "cache_price", 0.30) if args else 0.30
+
+    result = analyze_session(session_obj, input_price=input_price, cache_price=cache_price)
+
+    tot_tok = result.total_tokens_across_session
+    reuse_ratio = (result.context_reuse_ratio or 0.0) / 100.0
+    rep_tok = int(tot_tok * reuse_ratio)
+    novel_tok = max(0, tot_tok - rep_tok)
+
+    tot_bill = result.standard_input_cost
+    waste_cost = (rep_tok / 1_000_000.0) * input_price
+    novel_cost = max(0.0, tot_bill - waste_cost)
+
+    top_items = []
+    if result.repeated_blocks:
+        for b in result.repeated_blocks[:4]:
+            top_items.append({
+                "name": b["name"] if b.get("name") else (b["text"][:30] if b.get("text") else "context block"),
+                "reads": f"{b['occurrences']}x",
+                "cost": f"${b['repeated_cost_usd']:.2f}"
+            })
+    if not top_items and result.top_repeated_sources:
+        for s in result.top_repeated_sources[:4]:
+            top_items.append({
+                "name": s["name"],
+                "reads": f"{s.get('details', 'repeated')}",
+                "cost": f"${s['cost_usd']:.2f}"
+            })
+    if not top_items:
+        top_items.append({
+            "name": "conversational context history",
+            "reads": f"{len(session_obj.history)}x",
+            "cost": f"${waste_cost:.2f}"
+        })
+
+    session_display = format_display_ref(target_session, max_len=40)
+    shop_title = f"{selected_agent.upper()} RECEIPT"
+
+    receipt_data = {
+        "shopTitle": shop_title,
+        "heroWaste": f"${waste_cost:.2f}",
+        "heroSubtext": f"{reuse_ratio*100:.1f}% of your input was re-read context.",
+        "totalBill": f"${tot_bill:.2f}",
+        "novelCost": f"${novel_cost:.2f}",
+        "reuseRatio": f"{reuse_ratio*100:.1f}%",
+        "totalTokens": format_tokens(tot_tok),
+        "repeatedTokens": format_tokens(rep_tok),
+        "postStory": f"The model reread context throughout {len(session_obj.history)} turns.",
+        "topItems": top_items,
+        "sessionTitle": session_display
+    }
+
+    # Print Terminal Receipt
+    border = "=" * 44
+    console.print(f"\n[bold]{border}[/bold]")
+    console.print(f"[bold]{shop_title.center(44)}[/bold]")
+    console.print(f"[dim]{session_display.center(44)}[/dim]")
+    console.print(f"[bold]{border}[/bold]")
+    console.print(f"[bold red]YOU PAID:          ${waste_cost:.2f}[/bold red]")
+    console.print(f"[bold red]FOR:               REPEATED CONTEXT[/bold red]")
+    console.print(f"[dim]{reuse_ratio*100:.1f}% of your input was re-read context.[/dim]")
+    console.print("-" * 44)
+    console.print(f"Total Session Bill:  ${tot_bill:.2f}")
+    console.print(f"Cost of Unique Code: ${novel_cost:.2f}")
+    console.print(f"Total Input Tokens:  {format_tokens(tot_tok)}")
+    console.print(f"Re-read Tokens:      {format_tokens(rep_tok)} ({reuse_ratio*100:.1f}%)")
+    console.print("-" * 44)
+    console.print("[bold]TOP RE-READS:[/bold]")
+    for idx, item in enumerate(top_items, 1):
+        console.print(f"  {idx}. {item['name'][:24]:<24} {item['reads']} ({item['cost']})")
+    console.print(f"[bold]{border}[/bold]\n")
+
+    # Launch in Browser
+    if not getattr(args, "no_open", False):
+        receipt_template_path = Path(__file__).resolve().parent.parent / "receipt.html"
+        if not receipt_template_path.exists():
+            receipt_template_path = Path("receipt.html")
+
+        if receipt_template_path.exists():
+            encoded_data = urllib.parse.quote(json.dumps(receipt_data))
+            file_url = f"{receipt_template_path.resolve().as_uri()}#{encoded_data}"
+            console.print(f"[bold green]Opening interactive receipt in browser...[/bold green]")
+            try:
+                webbrowser.open(file_url)
+            except Exception:
+                console.print(f"[dim]Open URL: {file_url}[/dim]")
+        else:
+            console.print("[dim]receipt.html not found. Terminal report printed above.[/dim]")
 
 if __name__ == "__main__":
     main()
